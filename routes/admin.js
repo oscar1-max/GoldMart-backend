@@ -1,7 +1,11 @@
 const express = require("express");
 const pool = require("../db");
+const { protect, authorize } = require("../middleware/auth");
 
 const router = express.Router();
+
+// All admin routes require admin access
+router.use(protect, authorize("admin"));
 
 // Get all users
 router.get("/users", async (req, res) => {
