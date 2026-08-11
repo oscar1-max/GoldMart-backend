@@ -1,169 +1,152 @@
-const express = require("express");
-const bcrypt = require("bcryptjs");
-const jwt = require("jsonwebtoken");
-const pool = require("../db");
+"use client";
 
-const router = express.Router();
+import Link from "next/link";
+import { useState } from "react";
+import { useRouter } from "next/navigation";
 
-const generateToken = (user) => {
-  return jwt.sign(
-    {
-      id: user.id,
-      email: user.email,
-      role: user.role,
-    },
-    process.env.JWT_SECRET,
-    {
-      expiresIn: "7d",
+const API_URL = "https://goldmart-backend-yoxc.onrender.com";
+
+export default function LoginPage() {
+  const router = useRouter();
+
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  async function handleSubmit(event: React.FormEvent) {
+    event.preventDefault();
+
+    setLoading(true);
+    setError("");
+
+    try {
+      const response = await fetch(`${API_URL}/api/auth/login`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          email: email.trim(),
+          password,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        throw new Error(data.message || "Login failed");
+      }
+
+      // Save authentication
+      localStorage.setItem("goldmart_token", data.token);
+      localStorage.setItem(
+        "goldmart_user",
+        JSON.stringify(data.user)
+      );
+
+      // Redirect based on account type
+      if (data.user.role === "seller") {
+        router.push("/seller");
+      } else {
+        router.push("/");
+      }
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Something went wrong. Please try again."
+      );
+    } finally {
+      setLoading(false);
     }
+  }
+
+  return (
+    <main className="flex min-h-screen items-center justify-center bg-gray-50 px-4">
+      <div className="w-full max-w-md">
+
+        <Link
+          href="/"
+          className="mb-8 block text-center text-3xl font-black"
+        >
+          Gold<span className="text-[#D4AF37]">Mart</span>
+        </Link>
+
+        <div className="rounded-3xl bg-white p-6 shadow-sm sm:p-8">
+
+          <h1 className="text-3xl font-black">
+            Welcome Back
+          </h1>
+
+          <p className="mt-2 text-gray-500">
+            Sign in to your GoldMart account.
+          </p>
+
+          {error && (
+            <div className="mt-6 rounded-xl bg-red-50 p-4 text-sm font-medium text-red-700">
+              {error}
+            </div>
+          )}
+
+          <form
+            onSubmit={handleSubmit}
+            className="mt-8 space-y-5"
+          >
+
+            <div>
+              <label className="mb-2 block text-sm font-bold">
+                Email
+              </label>
+
+              <input
+                type="email"
+                required
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+                placeholder="you@example.com"
+                className="w-full rounded-xl border px-4 py-3 outline-none focus:border-[#D4AF37]"
+              />
+            </div>
+
+            <div>
+              <label className="mb-2 block text-sm font-bold">
+                Password
+              </label>
+
+              <input
+                type="password"
+                required
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                placeholder="Enter your password"
+                className="w-full rounded-xl border px-4 py-3 outline-none focus:border-[#D4AF37]"
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full rounded-xl bg-black py-3 font-bold text-white transition hover:bg-[#D4AF37] hover:text-black disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {loading ? "Signing In..." : "Sign In"}
+            </button>
+
+          </form>
+
+          <p className="mt-6 text-center text-sm text-gray-500">
+            Don't have an account?{" "}
+            <Link
+              href="/register"
+              className="font-bold text-[#A67C00]"
+            >
+              Create one
+            </Link>
+          </p>
+
+        </div>
+      </div>
+    </main>
   );
-};
-
-// Register
-router.post("/register", async (req, res) => {
-  try {
-    const {
-      name,
-      email,
-      password,
-      role = "customer",
-    } = req.body;
-
-    if (!name || !email || !password) {
-      return res.status(400).json({
-        success: false,
-        message: "Name, email and password are required",
-      });
-    }
-
-    if (password.length < 6) {
-      return res.status(400).json({
-        success: false,
-        message: "Password must be at least 6 characters",
-      });
-    }
-
-    // Only allow these two public account types.
-    if (!["customer", "seller"].includes(role)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid account type",
-      });
-    }
-
-    const normalizedEmail = email.trim().toLowerCase();
-
-    const existingUser = await pool.query(
-      "SELECT id FROM users WHERE email = $1",
-      [normalizedEmail]
-    );
-
-    if (existingUser.rows.length > 0) {
-      return res.status(409).json({
-        success: false,
-        message: "An account with this email already exists",
-      });
-    }
-
-    const hashedPassword = await bcrypt.hash(password, 12);
-
-    const result = await pool.query(
-      `
-      INSERT INTO users (name, email, password, role)
-      VALUES ($1, $2, $3, $4)
-      RETURNING id, name, email, role, created_at
-      `,
-      [
-        name.trim(),
-        normalizedEmail,
-        hashedPassword,
-        role,
-      ]
-    );
-
-    const user = result.rows[0];
-    const token = generateToken(user);
-
-    res.status(201).json({
-      success: true,
-      message: "Account created successfully",
-      user,
-      token,
-    });
-  } catch (error) {
-    console.error("Register error:", error);
-
-    res.status(500).json({
-      success: false,
-      message: "Failed to create account",
-    });
-  }
-});
-
-// Login
-router.post("/login", async (req, res) => {
-  try {
-    const { email, password } = req.body;
-
-    if (!email || !password) {
-      return res.status(400).json({
-        success: false,
-        message: "Email and password are required",
-      });
-    }
-
-    const normalizedEmail = email.trim().toLowerCase();
-
-    const result = await pool.query(
-      "SELECT * FROM users WHERE email = $1",
-      [normalizedEmail]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(401).json({
-        success: false,
-        message: "Invalid email or password",
-      });
-    }
-
-    const user = result.rows[0];
-
-    const passwordMatch = await bcrypt.compare(
-      password,
-      user.password
-    );
-
-    if (!passwordMatch) {
-      return res.status(401).json({
-        success: false,
-        message: "Invalid email or password",
-      });
-    }
-
-    const safeUser = {
-      id: user.id,
-      name: user.name,
-      email: user.email,
-      role: user.role,
-      created_at: user.created_at,
-    };
-
-    const token = generateToken(safeUser);
-
-    res.json({
-      success: true,
-      message: "Login successful",
-      user: safeUser,
-      token,
-    });
-  } catch (error) {
-    console.error("Login error:", error);
-
-    res.status(500).json({
-      success: false,
-      message: "Failed to login",
-    });
-  }
-});
-
-module.exports = router;
+}
