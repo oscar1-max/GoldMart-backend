@@ -1,13 +1,12 @@
 const express = require("express");
 const pool = require("../db");
+const { protect } = require("../middleware/auth");
 
 const router = express.Router();
 
-// Get user's cart
-router.get("/:userId", async (req, res) => {
+// Get logged-in user's cart
+router.get("/", protect, async (req, res) => {
   try {
-    const { userId } = req.params;
-
     const result = await pool.query(
       `
       SELECT
@@ -26,7 +25,7 @@ router.get("/:userId", async (req, res) => {
       WHERE carts.user_id = $1
       ORDER BY cart_items.id DESC
       `,
-      [userId]
+      [req.user.id]
     );
 
     res.json({
@@ -43,10 +42,9 @@ router.get("/:userId", async (req, res) => {
   }
 });
 
-// Add product to cart
-router.post("/:userId", async (req, res) => {
+// Add product to logged-in user's cart
+router.post("/", protect, async (req, res) => {
   try {
-    const { userId } = req.params;
     const { productId, quantity = 1 } = req.body;
 
     if (!productId) {
@@ -56,9 +54,35 @@ router.post("/:userId", async (req, res) => {
       });
     }
 
+    if (!Number.isInteger(quantity) || quantity < 1) {
+      return res.status(400).json({
+        success: false,
+        message: "Quantity must be at least 1",
+      });
+    }
+
+    const productResult = await pool.query(
+      "SELECT id, stock FROM products WHERE id = $1",
+      [productId]
+    );
+
+    if (productResult.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Product not found",
+      });
+    }
+
+    if (productResult.rows[0].stock < quantity) {
+      return res.status(400).json({
+        success: false,
+        message: "Not enough stock available",
+      });
+    }
+
     let cartResult = await pool.query(
       "SELECT id FROM carts WHERE user_id = $1",
-      [userId]
+      [req.user.id]
     );
 
     let cartId;
@@ -66,7 +90,7 @@ router.post("/:userId", async (req, res) => {
     if (cartResult.rows.length === 0) {
       const newCart = await pool.query(
         "INSERT INTO carts (user_id) VALUES ($1) RETURNING id",
-        [userId]
+        [req.user.id]
       );
 
       cartId = newCart.rows[0].id;
@@ -98,20 +122,22 @@ router.post("/:userId", async (req, res) => {
   }
 });
 
-// Remove product from cart
-router.delete("/:userId/:productId", async (req, res) => {
+// Remove product from logged-in user's cart
+router.delete("/:productId", protect, async (req, res) => {
   try {
-    const { userId, productId } = req.params;
+    const { productId } = req.params;
 
     await pool.query(
       `
       DELETE FROM cart_items
       WHERE cart_id = (
-        SELECT id FROM carts WHERE user_id = $1
+        SELECT id
+        FROM carts
+        WHERE user_id = $1
       )
       AND product_id = $2
       `,
-      [userId, productId]
+      [req.user.id, productId]
     );
 
     res.json({
