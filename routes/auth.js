@@ -22,7 +22,12 @@ const generateToken = (user) => {
 // Register
 router.post("/register", async (req, res) => {
   try {
-    const { name, email, password } = req.body;
+    const {
+      name,
+      email,
+      password,
+      role = "customer",
+    } = req.body;
 
     if (!name || !email || !password) {
       return res.status(400).json({
@@ -35,6 +40,14 @@ router.post("/register", async (req, res) => {
       return res.status(400).json({
         success: false,
         message: "Password must be at least 6 characters",
+      });
+    }
+
+    // Only allow these two public account types.
+    if (!["customer", "seller"].includes(role)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid account type",
       });
     }
 
@@ -56,11 +69,16 @@ router.post("/register", async (req, res) => {
 
     const result = await pool.query(
       `
-      INSERT INTO users (name, email, password)
-      VALUES ($1, $2, $3)
+      INSERT INTO users (name, email, password, role)
+      VALUES ($1, $2, $3, $4)
       RETURNING id, name, email, role, created_at
       `,
-      [name.trim(), normalizedEmail, hashedPassword]
+      [
+        name.trim(),
+        normalizedEmail,
+        hashedPassword,
+        role,
+      ]
     );
 
     const user = result.rows[0];
@@ -110,7 +128,10 @@ router.post("/login", async (req, res) => {
 
     const user = result.rows[0];
 
-    const passwordMatch = await bcrypt.compare(password, user.password);
+    const passwordMatch = await bcrypt.compare(
+      password,
+      user.password
+    );
 
     if (!passwordMatch) {
       return res.status(401).json({
