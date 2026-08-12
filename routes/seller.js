@@ -4,7 +4,7 @@ const { protect, authorize } = require("../middleware/auth");
 
 const router = express.Router();
 
-// Get products belonging to the logged-in seller
+// Get seller products
 router.get(
   "/products",
   protect,
@@ -40,7 +40,7 @@ router.get(
   }
 );
 
-// Add a product
+// Add seller product
 router.post(
   "/products",
   protect,
@@ -63,14 +63,20 @@ router.post(
         });
       }
 
-      if (Number(price) < 0) {
+      const numericPrice = Number(price);
+      const numericStock = Number(stock);
+
+      if (!Number.isFinite(numericPrice) || numericPrice < 0) {
         return res.status(400).json({
           success: false,
-          message: "Price cannot be negative",
+          message: "Invalid product price",
         });
       }
 
-      if (!Number.isInteger(Number(stock)) || Number(stock) < 0) {
+      if (
+        !Number.isInteger(numericStock) ||
+        numericStock < 0
+      ) {
         return res.status(400).json({
           success: false,
           message: "Stock must be a non-negative whole number",
@@ -80,18 +86,26 @@ router.post(
       const result = await pool.query(
         `
         INSERT INTO products
-          (name, description, price, image_url, category_id, stock, seller_id)
+          (
+            name,
+            description,
+            price,
+            image_url,
+            category_id,
+            stock,
+            seller_id
+          )
         VALUES
           ($1, $2, $3, $4, $5, $6, $7)
         RETURNING *
         `,
         [
           name.trim(),
-          description || null,
-          price,
+          description?.trim() || null,
+          numericPrice,
           image_url || null,
           category_id || null,
-          Number(stock),
+          numericStock,
           req.user.id,
         ]
       );
@@ -106,7 +120,7 @@ router.post(
 
       res.status(500).json({
         success: false,
-        message: "Failed to create product",
+        message: error.message || "Failed to create product",
       });
     }
   }
