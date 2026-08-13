@@ -5,7 +5,7 @@ const { protect, authorize } = require("../middleware/auth");
 const router = express.Router();
 
 // =====================================================
-// GET SELLER PRODUCTS
+// GET ALL SELLER PRODUCTS
 // =====================================================
 router.get(
   "/products",
@@ -37,6 +37,70 @@ router.get(
       res.status(500).json({
         success: false,
         message: "Failed to fetch seller products",
+      });
+    }
+  }
+);
+
+// =====================================================
+// GET ONE SELLER PRODUCT
+// =====================================================
+router.get(
+  "/products/:id",
+  protect,
+  authorize("seller", "admin"),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      let result;
+
+      if (req.user.role === "admin") {
+        result = await pool.query(
+          `
+          SELECT
+            products.*,
+            categories.name AS category_name
+          FROM products
+          LEFT JOIN categories
+            ON products.category_id = categories.id
+          WHERE products.id = $1
+          `,
+          [id]
+        );
+      } else {
+        result = await pool.query(
+          `
+          SELECT
+            products.*,
+            categories.name AS category_name
+          FROM products
+          LEFT JOIN categories
+            ON products.category_id = categories.id
+          WHERE products.id = $1
+            AND products.seller_id = $2
+          `,
+          [id, req.user.id]
+        );
+      }
+
+      if (result.rows.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "Product not found or you do not own this product",
+        });
+      }
+
+      res.json({
+        success: true,
+        product: result.rows[0],
+      });
+    } catch (error) {
+      console.error("Get seller product error:", error);
+
+      res.status(500).json({
+        success: false,
+        message: "Failed to fetch product",
       });
     }
   }
@@ -177,8 +241,6 @@ router.put(
         });
       }
 
-      // Make sure the product belongs to this seller.
-      // Admins can edit any product.
       let result;
 
       if (req.user.role === "admin") {
