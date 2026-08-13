@@ -5,6 +5,11 @@ const { protect, authorize } = require("../middleware/auth");
 const router = express.Router();
 
 // =====================================================
+// ALLOWED CURRENCIES
+// =====================================================
+const ALLOWED_CURRENCIES = ["USD", "NGN", "EUR", "GBP"];
+
+// =====================================================
 // GET ALL SELLER PRODUCTS
 // =====================================================
 router.get(
@@ -119,6 +124,7 @@ router.post(
         name,
         description,
         price,
+        currency = "USD",
         image_url,
         category_id,
         stock = 0,
@@ -133,11 +139,19 @@ router.post(
 
       const numericPrice = Number(price);
       const numericStock = Number(stock);
+      const productCurrency = String(currency).toUpperCase();
 
       if (!Number.isFinite(numericPrice) || numericPrice < 0) {
         return res.status(400).json({
           success: false,
           message: "Invalid product price",
+        });
+      }
+
+      if (!ALLOWED_CURRENCIES.includes(productCurrency)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid currency. Use USD, NGN, EUR or GBP.",
         });
       }
 
@@ -158,19 +172,21 @@ router.post(
           name,
           description,
           price,
+          currency,
           image_url,
           category_id,
           stock,
           seller_id
         )
         VALUES
-        ($1, $2, $3, $4, $5, $6, $7)
+        ($1, $2, $3, $4, $5, $6, $7, $8)
         RETURNING *
         `,
         [
           name.trim(),
           description?.trim() || null,
           numericPrice,
+          productCurrency,
           image_url || null,
           category_id || null,
           numericStock,
@@ -209,12 +225,17 @@ router.put(
         name,
         description,
         price,
+        currency = "USD",
         image_url,
         category_id,
         stock,
       } = req.body;
 
-      if (!name || price === undefined || stock === undefined) {
+      if (
+        !name ||
+        price === undefined ||
+        stock === undefined
+      ) {
         return res.status(400).json({
           success: false,
           message: "Product name, price and stock are required",
@@ -223,11 +244,19 @@ router.put(
 
       const numericPrice = Number(price);
       const numericStock = Number(stock);
+      const productCurrency = String(currency).toUpperCase();
 
       if (!Number.isFinite(numericPrice) || numericPrice < 0) {
         return res.status(400).json({
           success: false,
           message: "Invalid product price",
+        });
+      }
+
+      if (!ALLOWED_CURRENCIES.includes(productCurrency)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid currency. Use USD, NGN, EUR or GBP.",
         });
       }
 
@@ -251,16 +280,18 @@ router.put(
             name = $1,
             description = $2,
             price = $3,
-            image_url = $4,
-            category_id = $5,
-            stock = $6
-          WHERE id = $7
+            currency = $4,
+            image_url = $5,
+            category_id = $6,
+            stock = $7
+          WHERE id = $8
           RETURNING *
           `,
           [
             name.trim(),
             description?.trim() || null,
             numericPrice,
+            productCurrency,
             image_url || null,
             category_id || null,
             numericStock,
@@ -275,17 +306,19 @@ router.put(
             name = $1,
             description = $2,
             price = $3,
-            image_url = $4,
-            category_id = $5,
-            stock = $6
-          WHERE id = $7
-            AND seller_id = $8
+            currency = $4,
+            image_url = $5,
+            category_id = $6,
+            stock = $7
+          WHERE id = $8
+            AND seller_id = $9
           RETURNING *
           `,
           [
             name.trim(),
             description?.trim() || null,
             numericPrice,
+            productCurrency,
             image_url || null,
             category_id || null,
             numericStock,
