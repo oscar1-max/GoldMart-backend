@@ -4,6 +4,7 @@ require("dotenv").config();
 
 const routes = require("./routes");
 const testDatabaseConnection = require("./database");
+const pool = require("./db");
 
 const app = express();
 
@@ -17,9 +18,39 @@ app.use(
 
 app.use(express.json());
 
-// API routes
+// =====================================================
+// DATABASE SETUP
+// =====================================================
+async function setupDatabase() {
+  try {
+    // Add currency column if it does not already exist.
+    // Existing products will use USD by default.
+    await pool.query(`
+      ALTER TABLE products
+      ADD COLUMN IF NOT EXISTS currency VARCHAR(3) NOT NULL DEFAULT 'USD';
+    `);
+
+    // Make sure existing products have a valid currency.
+    await pool.query(`
+      UPDATE products
+      SET currency = 'USD'
+      WHERE currency IS NULL OR currency = '';
+    `);
+
+    console.log("Database currency setup completed");
+  } catch (error) {
+    console.error("Database setup error:", error.message);
+  }
+}
+
+// =====================================================
+// API ROUTES
+// =====================================================
 app.use("/api", routes);
 
+// =====================================================
+// HOME
+// =====================================================
 app.get("/", (req, res) => {
   res.json({
     success: true,
@@ -27,6 +58,9 @@ app.get("/", (req, res) => {
   });
 });
 
+// =====================================================
+// HEALTH CHECK
+// =====================================================
 app.get("/api/health", (req, res) => {
   res.json({
     success: true,
@@ -34,8 +68,13 @@ app.get("/api/health", (req, res) => {
   });
 });
 
+// =====================================================
+// START SERVER
+// =====================================================
 app.listen(PORT, async () => {
   console.log(`GoldMart API running on port ${PORT}`);
 
   await testDatabaseConnection();
+
+  await setupDatabase();
 });
