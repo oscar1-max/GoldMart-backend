@@ -1,183 +1,42 @@
 const express = require("express");
 const pool = require("../db");
-const { protect } = require("../middleware/auth");
+const { protect, authorize } = require("../middleware/auth");
 
 const router = express.Router();
 
 // =====================================================
-// CREATE ORDER FROM CART
-// =====================================================
-router.post("/", protect, async (req, res) => {
-  const client = await pool.connect();
-
-  try {
-    await client.query("BEGIN");
-
-    // Get user's cart
-    const cartResult = await client.query(
-      `
-      SELECT id
-      FROM carts
-      WHERE user_id = $1
-      `,
-      [req.user.id]
-    );
-
-    if (cartResult.rows.length === 0) {
-      await client.query("ROLLBACK");
-
-      return res.status(400).json({
-        success: false,
-        message: "Your cart is empty",
-      });
-    }
-
-    const cartId = cartResult.rows[0].id;
-
-    // Get cart products
-    const itemsResult = await client.query(
-      `
-      SELECT
-        cart_items.product_id,
-        cart_items.quantity,
-        products.price,
-        products.stock,
-        products.name
-      FROM cart_items
-      JOIN products
-        ON cart_items.product_id = products.id
-      WHERE cart_items.cart_id = $1
-      FOR UPDATE
-      `,
-      [cartId]
-    );
-
-    if (itemsResult.rows.length === 0) {
-      await client.query("ROLLBACK");
-
-      return res.status(400).json({
-        success: false,
-        message: "Your cart is empty",
-      });
-    }
-
-    // Check stock and calculate total
-    let totalAmount = 0;
-
-    for (const item of itemsResult.rows) {
-      if (item.stock < item.quantity) {
-        await client.query("ROLLBACK");
-
-        return res.status(400).json({
-          success: false,
-          message: `Not enough stock for ${item.name}`,
-        });
-      }
-
-      totalAmount +=
-        Number(item.price) * Number(item.quantity);
-    }
-
-    // Create order
-    const orderResult = await client.query(
-      `
-      INSERT INTO orders
-      (
-        user_id,
-        total_amount,
-        status
-      )
-      VALUES ($1, $2, $3)
-      RETURNING *
-      `,
-      [
-        req.user.id,
-        totalAmount,
-        "pending",
-      ]
-    );
-
-    const order = orderResult.rows[0];
-
-    // Create order items + reduce stock
-    for (const item of itemsResult.rows) {
-      await client.query(
-        `
-        INSERT INTO order_items
-        (
-          order_id,
-          product_id,
-          quantity,
-          price
-        )
-        VALUES ($1, $2, $3, $4)
-        `,
-        [
-          order.id,
-          item.product_id,
-          item.quantity,
-          item.price,
-        ]
-      );
-
-      await client.query(
-        `
-        UPDATE products
-        SET stock = stock - $1
-        WHERE id = $2
-        `,
-        [
-          item.quantity,
-          item.product_id,
-        ]
-      );
-    }
-
-    // Empty cart
-    await client.query(
-      `
-      DELETE FROM cart_items
-      WHERE cart_id = $1
-      `,
-      [cartId]
-    );
-
-    await client.query("COMMIT");
-
-    res.status(201).json({
-      success: true,
-      message: "Order created successfully",
-      order,
-    });
-  } catch (error) {
-    await client.query("ROLLBACK");
-
-    console.error("Create order error:", error);
-
-    res.status(500).json({
-      success: false,
-      message: "Failed to create order",
-    });
-  } finally {
-    client.release();
-  }
-});
-
-// =====================================================
-// GET LOGGED-IN USER'S ORDERS
+// BUYER: GET MY ORDERS
 // =====================================================
 router.get("/", protect, async (req, res) => {
   try {
     const result = await pool.query(
       `
       SELECT
-        id,
-        total_amount,
-        status,
-        created_at
+        orders.id,
+        orders.total_amount,
+        orders.status,
+        orders.created_at,
+        COALESCE(
+          json_agg(
+            json_build_object(
+              'id', order_items.id,
+              'product_id', order_items.product_id,
+              'quantity', order_items.quantity,
+              'price', order_items.price,
+              'name', products.name,
+              'image_url', products.image_url
+            )
+          ) FILTER (WHERE order_items.id IS NOT NULL),
+          '[]'
+        ) AS items
       FROM orders
-      WHERE user_id = $1
-      ORDER BY created_at DESC
+      LEFT JOIN order_items
+        ON orders.id = order_items.order_id
+      LEFT JOIN products
+        ON order_items.product_id = products.id
+      WHERE orders.user_id = $1
+      GROUP BY orders.id
+      ORDER BY orders.created_at DESC
       `,
       [req.user.id]
     );
@@ -187,7 +46,7 @@ router.get("/", protect, async (req, res) => {
       orders: result.rows,
     });
   } catch (error) {
-    console.error("Get orders error:", error);
+    console.error("Get buyer orders error:", error);
 
     res.status(500).json({
       success: false,
@@ -197,7 +56,7 @@ router.get("/", protect, async (req, res) => {
 });
 
 // =====================================================
-// GET ONE ORDER
+// BUYER: GET ONE ORDER
 // =====================================================
 router.get("/:orderId", protect, async (req, res) => {
   try {
@@ -205,10 +64,19 @@ router.get("/:orderId", protect, async (req, res) => {
 
     const orderResult = await pool.query(
       `
-      SELECT *
+      SELECT
+        orders.id,
+        orders.user_id,
+        orders.total_amount,
+        orders.status,
+        orders.created_at,
+        users.name AS customer_name,
+        users.email AS customer_email
       FROM orders
-      WHERE id = $1
-        AND user_id = $2
+      JOIN users
+        ON orders.user_id = users.id
+      WHERE orders.id = $1
+        AND orders.user_id = $2
       `,
       [orderId, req.user.id]
     );
@@ -228,8 +96,7 @@ router.get("/:orderId", protect, async (req, res) => {
         order_items.quantity,
         order_items.price,
         products.name,
-        products.image_url,
-        products.seller_id
+        products.image_url
       FROM order_items
       LEFT JOIN products
         ON order_items.product_id = products.id
@@ -252,5 +119,154 @@ router.get("/:orderId", protect, async (req, res) => {
     });
   }
 });
+
+// =====================================================
+// SELLER: GET CUSTOMER ORDERS
+// =====================================================
+router.get(
+  "/seller/all",
+  protect,
+  authorize("seller", "admin"),
+  async (req, res) => {
+    try {
+      const result = await pool.query(
+        `
+        SELECT
+          orders.id,
+          orders.user_id,
+          orders.total_amount,
+          orders.status,
+          orders.created_at,
+
+          users.name AS customer_name,
+          users.email AS customer_email,
+
+          COALESCE(
+            json_agg(
+              json_build_object(
+                'id', order_items.id,
+                'product_id', order_items.product_id,
+                'product_name', products.name,
+                'quantity', order_items.quantity,
+                'price', order_items.price,
+                'image_url', products.image_url
+              )
+            ) FILTER (WHERE order_items.id IS NOT NULL),
+            '[]'
+          ) AS items
+
+        FROM orders
+
+        JOIN users
+          ON orders.user_id = users.id
+
+        JOIN order_items
+          ON orders.id = order_items.order_id
+
+        JOIN products
+          ON order_items.product_id = products.id
+
+        WHERE products.seller_id = $1
+
+        GROUP BY
+          orders.id,
+          users.name,
+          users.email
+
+        ORDER BY orders.created_at DESC
+        `,
+        [req.user.id]
+      );
+
+      res.json({
+        success: true,
+        orders: result.rows,
+      });
+    } catch (error) {
+      console.error("Get seller orders error:", error);
+
+      res.status(500).json({
+        success: false,
+        message: "Failed to fetch seller orders",
+      });
+    }
+  }
+);
+
+// =====================================================
+// SELLER: UPDATE ORDER STATUS
+// =====================================================
+router.put(
+  "/seller/:orderId/status",
+  protect,
+  authorize("seller", "admin"),
+  async (req, res) => {
+    try {
+      const { orderId } = req.params;
+      const { status } = req.body;
+
+      const allowedStatuses = [
+        "pending",
+        "processing",
+        "shipped",
+        "delivered",
+        "cancelled",
+      ];
+
+      if (!status || !allowedStatuses.includes(status)) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Invalid status. Use pending, processing, shipped, delivered or cancelled.",
+        });
+      }
+
+      const ownershipCheck = await pool.query(
+        `
+        SELECT orders.id
+        FROM orders
+        JOIN order_items
+          ON orders.id = order_items.order_id
+        JOIN products
+          ON order_items.product_id = products.id
+        WHERE orders.id = $1
+          AND products.seller_id = $2
+        LIMIT 1
+        `,
+        [orderId, req.user.id]
+      );
+
+      if (ownershipCheck.rows.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "Order not found or does not belong to you",
+        });
+      }
+
+      const result = await pool.query(
+        `
+        UPDATE orders
+        SET status = $1
+        WHERE id = $2
+        RETURNING *
+        `,
+        [status, orderId]
+      );
+
+      res.json({
+        success: true,
+        message: "Order status updated successfully",
+        order: result.rows[0],
+      });
+    } catch (error) {
+      console.error("Update order status error:", error);
+
+      res.status(500).json({
+        success: false,
+        message: "Failed to update order status",
+      });
+    }
+  }
+);
 
 module.exports = router;
