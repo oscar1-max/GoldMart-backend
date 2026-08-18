@@ -7,9 +7,77 @@ const router = express.Router();
 const ALLOWED_CURRENCIES = ["USD", "NGN", "EUR", "GBP"];
 
 // =====================================================
-// SELLER PRODUCTS
+// SELLER DASHBOARD STATS
 // =====================================================
+router.get(
+  "/stats",
+  protect,
+  authorize("seller", "admin"),
+  async (req, res) => {
+    try {
+      const sellerId = req.user.id;
 
+      const productsResult = await pool.query(
+        `
+        SELECT COUNT(*)::int AS count
+        FROM products
+        WHERE seller_id = $1
+        `,
+        [sellerId]
+      );
+
+      const ordersResult = await pool.query(
+        `
+        SELECT COUNT(DISTINCT orders.id)::int AS count
+        FROM orders
+        JOIN order_items
+          ON orders.id = order_items.order_id
+        JOIN products
+          ON order_items.product_id = products.id
+        WHERE products.seller_id = $1
+        `,
+        [sellerId]
+      );
+
+      const salesResult = await pool.query(
+        `
+        SELECT COALESCE(
+          SUM(order_items.quantity * order_items.price),
+          0
+        ) AS total
+        FROM order_items
+        JOIN orders
+          ON order_items.order_id = orders.id
+        JOIN products
+          ON order_items.product_id = products.id
+        WHERE products.seller_id = $1
+          AND orders.status != 'cancelled'
+        `,
+        [sellerId]
+      );
+
+      res.json({
+        success: true,
+        stats: {
+          products: productsResult.rows[0].count,
+          orders: ordersResult.rows[0].count,
+          sales: salesResult.rows[0].total,
+        },
+      });
+    } catch (error) {
+      console.error("Get seller stats error:", error);
+
+      res.status(500).json({
+        success: false,
+        message: "Failed to fetch seller statistics",
+      });
+    }
+  }
+);
+
+// =====================================================
+// GET ALL SELLER PRODUCTS
+// =====================================================
 router.get(
   "/products",
   protect,
@@ -48,7 +116,6 @@ router.get(
 // =====================================================
 // GET ONE SELLER PRODUCT
 // =====================================================
-
 router.get(
   "/products/:id",
   protect,
@@ -82,7 +149,7 @@ router.get(
           LEFT JOIN categories
             ON products.category_id = categories.id
           WHERE products.id = $1
-          AND products.seller_id = $2
+            AND products.seller_id = $2
           `,
           [id, req.user.id]
         );
@@ -91,7 +158,7 @@ router.get(
       if (result.rows.length === 0) {
         return res.status(404).json({
           success: false,
-          message: "Product not found",
+          message: "Product not found or you do not own this product",
         });
       }
 
@@ -113,7 +180,6 @@ router.get(
 // =====================================================
 // ADD SELLER PRODUCT
 // =====================================================
-
 router.post(
   "/products",
   protect,
@@ -176,7 +242,7 @@ router.post(
           seller_id
         )
         VALUES
-        ($1,$2,$3,$4,$5,$6,$7,$8)
+        ($1, $2, $3, $4, $5, $6, $7, $8)
         RETURNING *
         `,
         [
@@ -210,7 +276,6 @@ router.post(
 // =====================================================
 // UPDATE SELLER PRODUCT
 // =====================================================
-
 router.put(
   "/products/:id",
   protect,
@@ -302,7 +367,7 @@ router.put(
             category_id = $6,
             stock = $7
           WHERE id = $8
-          AND seller_id = $9
+            AND seller_id = $9
           RETURNING *
           `,
           [
@@ -322,7 +387,7 @@ router.put(
       if (result.rows.length === 0) {
         return res.status(404).json({
           success: false,
-          message: "Product not found",
+          message: "Product not found or you do not own this product",
         });
       }
 
@@ -345,7 +410,6 @@ router.put(
 // =====================================================
 // DELETE SELLER PRODUCT
 // =====================================================
-
 router.delete(
   "/products/:id",
   protect,
@@ -370,7 +434,7 @@ router.delete(
           `
           DELETE FROM products
           WHERE id = $1
-          AND seller_id = $2
+            AND seller_id = $2
           RETURNING *
           `,
           [id, req.user.id]
@@ -380,7 +444,7 @@ router.delete(
       if (result.rows.length === 0) {
         return res.status(404).json({
           success: false,
-          message: "Product not found",
+          message: "Product not found or you do not own this product",
         });
       }
 
@@ -395,145 +459,6 @@ router.delete(
       res.status(500).json({
         success: false,
         message: error.message || "Failed to delete product",
-      });
-    }
-  }
-);
-
-// =====================================================
-// SELLER DASHBOARD STATS
-// =====================================================
-
-router.get(
-  "/stats",
-  protect,
-  authorize("seller", "admin"),
-  async (req, res) => {
-    try {
-      const sellerId = req.user.id;
-
-      const productsResult = await pool.query(
-        `
-        SELECT COUNT(*) AS product_count
-        FROM products
-        WHERE seller_id = $1
-        `,
-        [sellerId]
-      );
-
-      const ordersResult = await pool.query(
-        `
-        SELECT COUNT(DISTINCT orders.id) AS order_count
-        FROM orders
-        JOIN order_items
-          ON orders.id = order_items.order_id
-        JOIN products
-          ON order_items.product_id = products.id
-        WHERE products.seller_id = $1
-        `,
-        [sellerId]
-      );
-
-      const salesResult = await pool.query(
-        `
-        SELECT COALESCE(
-          SUM(order_items.price * order_items.quantity),
-          0
-        ) AS total_sales
-        FROM order_items
-        JOIN products
-          ON order_items.product_id = products.id
-        JOIN orders
-          ON order_items.order_id = orders.id
-        WHERE products.seller_id = $1
-        AND orders.status != 'cancelled'
-        `,
-        [sellerId]
-      );
-
-      res.json({
-        success: true,
-        stats: {
-          products: Number(
-            productsResult.rows[0].product_count
-          ),
-          orders: Number(
-            ordersResult.rows[0].order_count
-          ),
-          sales: Number(
-            salesResult.rows[0].total_sales
-          ),
-        },
-      });
-    } catch (error) {
-      console.error("Get seller stats error:", error);
-
-      res.status(500).json({
-        success: false,
-        message: "Failed to fetch seller statistics",
-      });
-    }
-  }
-);
-
-// =====================================================
-// SELLER ORDERS
-// =====================================================
-
-router.get(
-  "/orders",
-  protect,
-  authorize("seller", "admin"),
-  async (req, res) => {
-    try {
-      const result = await pool.query(
-        `
-        SELECT
-          orders.id,
-          orders.status,
-          orders.created_at,
-          orders.user_id,
-          users.name AS customer_name,
-          users.email AS customer_email,
-
-          order_items.product_id,
-          products.name AS product_name,
-
-          order_items.quantity,
-          order_items.price,
-
-          products.currency,
-
-          (order_items.quantity * order_items.price) AS item_total
-
-        FROM orders
-
-        JOIN users
-          ON orders.user_id = users.id
-
-        JOIN order_items
-          ON orders.id = order_items.order_id
-
-        JOIN products
-          ON order_items.product_id = products.id
-
-        WHERE products.seller_id = $1
-
-        ORDER BY orders.created_at DESC
-        `,
-        [req.user.id]
-      );
-
-      res.json({
-        success: true,
-        orders: result.rows,
-      });
-    } catch (error) {
-      console.error("Get seller orders error:", error);
-
-      res.status(500).json({
-        success: false,
-        message: "Failed to fetch seller orders",
       });
     }
   }
