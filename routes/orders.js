@@ -5,7 +5,7 @@ const { protect, authorize } = require("../middleware/auth");
 const router = express.Router();
 
 // =====================================================
-// BUYER: GET MY ORDERS
+// BUYER — GET MY ORDERS
 // =====================================================
 router.get("/", protect, async (req, res) => {
   try {
@@ -15,27 +15,9 @@ router.get("/", protect, async (req, res) => {
         orders.id,
         orders.total_amount,
         orders.status,
-        orders.created_at,
-        COALESCE(
-          json_agg(
-            json_build_object(
-              'id', order_items.id,
-              'product_id', order_items.product_id,
-              'quantity', order_items.quantity,
-              'price', order_items.price,
-              'name', products.name,
-              'image_url', products.image_url
-            )
-          ) FILTER (WHERE order_items.id IS NOT NULL),
-          '[]'
-        ) AS items
+        orders.created_at
       FROM orders
-      LEFT JOIN order_items
-        ON orders.id = order_items.order_id
-      LEFT JOIN products
-        ON order_items.product_id = products.id
       WHERE orders.user_id = $1
-      GROUP BY orders.id
       ORDER BY orders.created_at DESC
       `,
       [req.user.id]
@@ -56,75 +38,10 @@ router.get("/", protect, async (req, res) => {
 });
 
 // =====================================================
-// BUYER: GET ONE ORDER
-// =====================================================
-router.get("/:orderId", protect, async (req, res) => {
-  try {
-    const { orderId } = req.params;
-
-    const orderResult = await pool.query(
-      `
-      SELECT
-        orders.id,
-        orders.user_id,
-        orders.total_amount,
-        orders.status,
-        orders.created_at,
-        users.name AS customer_name,
-        users.email AS customer_email
-      FROM orders
-      JOIN users
-        ON orders.user_id = users.id
-      WHERE orders.id = $1
-        AND orders.user_id = $2
-      `,
-      [orderId, req.user.id]
-    );
-
-    if (orderResult.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "Order not found",
-      });
-    }
-
-    const itemsResult = await pool.query(
-      `
-      SELECT
-        order_items.id,
-        order_items.product_id,
-        order_items.quantity,
-        order_items.price,
-        products.name,
-        products.image_url
-      FROM order_items
-      LEFT JOIN products
-        ON order_items.product_id = products.id
-      WHERE order_items.order_id = $1
-      `,
-      [orderId]
-    );
-
-    res.json({
-      success: true,
-      order: orderResult.rows[0],
-      items: itemsResult.rows,
-    });
-  } catch (error) {
-    console.error("Get order error:", error);
-
-    res.status(500).json({
-      success: false,
-      message: "Failed to fetch order",
-    });
-  }
-});
-
-// =====================================================
-// SELLER: GET CUSTOMER ORDERS
+// SELLER — GET CUSTOMER ORDERS
 // =====================================================
 router.get(
-  "/seller/all",
+  "/seller",
   protect,
   authorize("seller", "admin"),
   async (req, res) => {
@@ -132,46 +49,31 @@ router.get(
       const result = await pool.query(
         `
         SELECT
-          orders.id,
-          orders.user_id,
+          orders.id AS order_id,
+          orders.user_id AS customer_id,
+          users.name AS customer_name,
+          users.email AS customer_email,
           orders.total_amount,
           orders.status,
           orders.created_at,
 
-          users.name AS customer_name,
-          users.email AS customer_email,
+          order_items.id AS order_item_id,
+          order_items.product_id,
+          order_items.quantity,
+          order_items.price,
 
-          COALESCE(
-            json_agg(
-              json_build_object(
-                'id', order_items.id,
-                'product_id', order_items.product_id,
-                'product_name', products.name,
-                'quantity', order_items.quantity,
-                'price', order_items.price,
-                'image_url', products.image_url
-              )
-            ) FILTER (WHERE order_items.id IS NOT NULL),
-            '[]'
-          ) AS items
+          products.name AS product_name,
+          products.image_url
 
         FROM orders
-
         JOIN users
           ON orders.user_id = users.id
-
         JOIN order_items
           ON orders.id = order_items.order_id
-
         JOIN products
           ON order_items.product_id = products.id
 
         WHERE products.seller_id = $1
-
-        GROUP BY
-          orders.id,
-          users.name,
-          users.email
 
         ORDER BY orders.created_at DESC
         `,
@@ -194,7 +96,7 @@ router.get(
 );
 
 // =====================================================
-// SELLER: UPDATE ORDER STATUS
+// SELLER — UPDATE ORDER STATUS
 // =====================================================
 router.put(
   "/seller/:orderId/status",
@@ -221,6 +123,8 @@ router.put(
         });
       }
 
+      // Make sure this order contains at least one
+      // product belonging to this seller.
       const ownershipCheck = await pool.query(
         `
         SELECT orders.id
@@ -236,7 +140,10 @@ router.put(
         [orderId, req.user.id]
       );
 
-      if (ownershipCheck.rows.length === 0) {
+      if (
+        req.user.role !== "admin" &&
+        ownershipCheck.rows.length === 0
+      ) {
         return res.status(404).json({
           success: false,
           message: "Order not found or does not belong to you",
@@ -248,10 +155,17 @@ router.put(
         UPDATE orders
         SET status = $1
         WHERE id = $2
-        RETURNING *
+        RETURNING id, total_amount, status, created_at
         `,
         [status, orderId]
       );
+
+      if (result.rows.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "Order not found",
+        });
+      }
 
       res.json({
         success: true,
@@ -268,5 +182,67 @@ router.put(
     }
   }
 );
+
+// =====================================================
+// BUYER — GET ONE ORDER
+// =====================================================
+router.get("/:orderId", protect, async (req, res) => {
+  try {
+    const { orderId } = req.params;
+
+    const orderResult = await pool.query(
+      `
+      SELECT
+        orders.*,
+        users.name AS customer_name,
+        users.email AS customer_email
+      FROM orders
+      JOIN users
+        ON orders.user_id = users.id
+      WHERE orders.id = $1
+        AND orders.user_id = $2
+      `,
+      [orderId, req.user.id]
+    );
+
+    if (orderResult.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Order not found",
+      });
+    }
+
+    const itemsResult = await pool.query(
+      `
+      SELECT
+        order_items.id,
+        order_items.product_id,
+        order_items.quantity,
+        order_items.price,
+        products.name,
+        products.image_url,
+        products.seller_id
+      FROM order_items
+      LEFT JOIN products
+        ON order_items.product_id = products.id
+      WHERE order_items.order_id = $1
+      `,
+      [orderId]
+    );
+
+    res.json({
+      success: true,
+      order: orderResult.rows[0],
+      items: itemsResult.rows,
+    });
+  } catch (error) {
+    console.error("Get order error:", error);
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to fetch order",
+    });
+  }
+});
 
 module.exports = router;
