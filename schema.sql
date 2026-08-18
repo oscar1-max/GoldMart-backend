@@ -57,13 +57,44 @@ CREATE TABLE IF NOT EXISTS order_items (
   price DECIMAL(12, 2) NOT NULL
 );
 
+-- =====================================================
+-- SELLER REVIEWS
+-- =====================================================
+
 CREATE TABLE IF NOT EXISTS seller_reviews (
   id SERIAL PRIMARY KEY,
-  seller_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  buyer_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
-  rating INTEGER NOT NULL CHECK (rating >= 1 AND rating <= 5),
+
+  buyer_id INTEGER NOT NULL
+    REFERENCES users(id)
+    ON DELETE CASCADE,
+
+  seller_id INTEGER NOT NULL
+    REFERENCES users(id)
+    ON DELETE CASCADE,
+
+  order_id INTEGER NOT NULL
+    REFERENCES orders(id)
+    ON DELETE CASCADE,
+
+  rating INTEGER NOT NULL
+    CHECK (rating >= 1 AND rating <= 5),
+
   review TEXT,
+
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE(buyer_id, order_id)
+
+  UNIQUE (buyer_id, seller_id, order_id)
 );
+
+-- =====================================================
+-- SELLER REVIEW INDEXES
+-- =====================================================
+
+CREATE INDEX IF NOT EXISTS seller_reviews_seller_id_idx
+ON seller_reviews(seller_id);
+
+CREATE INDEX IF NOT EXISTS seller_reviews_buyer_id_idx
+ON seller_reviews(buyer_id);
+
+CREATE INDEX IF NOT EXISTS seller_reviews_order_id_idx
+ON seller_reviews(order_id);
