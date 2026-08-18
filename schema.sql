@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS products (
   name VARCHAR(255) NOT NULL,
   description TEXT,
   price DECIMAL(12, 2) NOT NULL,
+  currency VARCHAR(3) DEFAULT 'USD',
   image_url TEXT,
   category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,
   stock INTEGER DEFAULT 0,
@@ -54,4 +55,15 @@ CREATE TABLE IF NOT EXISTS order_items (
   product_id INTEGER REFERENCES products(id) ON DELETE SET NULL,
   quantity INTEGER NOT NULL,
   price DECIMAL(12, 2) NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS seller_reviews (
+  id SERIAL PRIMARY KEY,
+  seller_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  buyer_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+  rating INTEGER NOT NULL CHECK (rating >= 1 AND rating <= 5),
+  review TEXT,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(buyer_id, order_id)
 );
