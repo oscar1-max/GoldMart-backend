@@ -4,9 +4,6 @@ const { protect, authorize } = require("../middleware/auth");
 
 const router = express.Router();
 
-// =====================================================
-// ALLOWED CURRENCIES
-// =====================================================
 const ALLOWED_CURRENCIES = ["USD", "NGN", "EUR", "GBP"];
 
 // =====================================================
@@ -155,10 +152,7 @@ router.post(
         });
       }
 
-      if (
-        !Number.isInteger(numericStock) ||
-        numericStock < 0
-      ) {
+      if (!Number.isInteger(numericStock) || numericStock < 0) {
         return res.status(400).json({
           success: false,
           message: "Stock must be a non-negative whole number",
@@ -172,21 +166,18 @@ router.post(
           name,
           description,
           price,
-          currency,
           image_url,
           category_id,
           stock,
           seller_id
         )
-        VALUES
-        ($1, $2, $3, $4, $5, $6, $7, $8)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
         RETURNING *
         `,
         [
           name.trim(),
           description?.trim() || null,
           numericPrice,
-          productCurrency,
           image_url || null,
           category_id || null,
           numericStock,
@@ -225,17 +216,12 @@ router.put(
         name,
         description,
         price,
-        currency = "USD",
         image_url,
         category_id,
         stock,
       } = req.body;
 
-      if (
-        !name ||
-        price === undefined ||
-        stock === undefined
-      ) {
+      if (!name || price === undefined || stock === undefined) {
         return res.status(400).json({
           success: false,
           message: "Product name, price and stock are required",
@@ -244,7 +230,6 @@ router.put(
 
       const numericPrice = Number(price);
       const numericStock = Number(stock);
-      const productCurrency = String(currency).toUpperCase();
 
       if (!Number.isFinite(numericPrice) || numericPrice < 0) {
         return res.status(400).json({
@@ -253,17 +238,7 @@ router.put(
         });
       }
 
-      if (!ALLOWED_CURRENCIES.includes(productCurrency)) {
-        return res.status(400).json({
-          success: false,
-          message: "Invalid currency. Use USD, NGN, EUR or GBP.",
-        });
-      }
-
-      if (
-        !Number.isInteger(numericStock) ||
-        numericStock < 0
-      ) {
+      if (!Number.isInteger(numericStock) || numericStock < 0) {
         return res.status(400).json({
           success: false,
           message: "Stock must be a non-negative whole number",
@@ -280,18 +255,16 @@ router.put(
             name = $1,
             description = $2,
             price = $3,
-            currency = $4,
-            image_url = $5,
-            category_id = $6,
-            stock = $7
-          WHERE id = $8
+            image_url = $4,
+            category_id = $5,
+            stock = $6
+          WHERE id = $7
           RETURNING *
           `,
           [
             name.trim(),
             description?.trim() || null,
             numericPrice,
-            productCurrency,
             image_url || null,
             category_id || null,
             numericStock,
@@ -306,19 +279,17 @@ router.put(
             name = $1,
             description = $2,
             price = $3,
-            currency = $4,
-            image_url = $5,
-            category_id = $6,
-            stock = $7
-          WHERE id = $8
-            AND seller_id = $9
+            image_url = $4,
+            category_id = $5,
+            stock = $6
+          WHERE id = $7
+            AND seller_id = $8
           RETURNING *
           `,
           [
             name.trim(),
             description?.trim() || null,
             numericPrice,
-            productCurrency,
             image_url || null,
             category_id || null,
             numericStock,
@@ -403,6 +374,124 @@ router.delete(
       res.status(500).json({
         success: false,
         message: error.message || "Failed to delete product",
+      });
+    }
+  }
+);
+
+// =====================================================
+// SELLER DASHBOARD STATS
+// =====================================================
+router.get(
+  "/stats",
+  protect,
+  authorize("seller", "admin"),
+  async (req, res) => {
+    try {
+      const sellerId = req.user.id;
+
+      const productsResult = await pool.query(
+        `
+        SELECT COUNT(*)::INTEGER AS product_count
+        FROM products
+        WHERE seller_id = $1
+        `,
+        [sellerId]
+      );
+
+      const ordersResult = await pool.query(
+        `
+        SELECT
+          COUNT(DISTINCT orders.id)::INTEGER AS order_count,
+          COALESCE(
+            SUM(order_items.price * order_items.quantity),
+            0
+          ) AS total_sales
+        FROM orders
+        JOIN order_items
+          ON orders.id = order_items.order_id
+        JOIN products
+          ON order_items.product_id = products.id
+        WHERE products.seller_id = $1
+        `,
+        [sellerId]
+      );
+
+      res.json({
+        success: true,
+        stats: {
+          products: productsResult.rows[0].product_count,
+          orders: ordersResult.rows[0].order_count,
+          sales: Number(ordersResult.rows[0].total_sales),
+        },
+      });
+    } catch (error) {
+      console.error("Seller stats error:", error);
+
+      res.status(500).json({
+        success: false,
+        message: "Failed to fetch seller statistics",
+      });
+    }
+  }
+);
+
+// =====================================================
+// SELLER ORDERS
+// =====================================================
+router.get(
+  "/orders",
+  protect,
+  authorize("seller", "admin"),
+  async (req, res) => {
+    try {
+      const result = await pool.query(
+        `
+        SELECT
+          orders.id AS order_id,
+          orders.status,
+          orders.created_at,
+          orders.user_id AS buyer_id,
+
+          users.name AS buyer_name,
+          users.email AS buyer_email,
+
+          products.id AS product_id,
+          products.name AS product_name,
+
+          order_items.quantity,
+          order_items.price,
+
+          (order_items.quantity * order_items.price) AS item_total
+
+        FROM orders
+
+        JOIN order_items
+          ON orders.id = order_items.order_id
+
+        JOIN products
+          ON order_items.product_id = products.id
+
+        JOIN users
+          ON orders.user_id = users.id
+
+        WHERE products.seller_id = $1
+
+        ORDER BY orders.created_at DESC
+        `,
+        [req.user.id]
+      );
+
+      res.json({
+        success: true,
+        orders: result.rows,
+      });
+    } catch (error) {
+      console.error("Seller orders error:", error);
+
+      res.status(500).json({
+        success: false,
+        message: "Failed to fetch seller orders",
       });
     }
   }
