@@ -5,20 +5,25 @@ const { protect } = require("../middleware/auth");
 const router = express.Router();
 
 // =====================================================
-// CREATE SELLER REVIEW
+// BUYER — CREATE SELLER REVIEW
 // =====================================================
 router.post("/", protect, async (req, res) => {
   try {
     const { orderId, sellerId, rating, review } = req.body;
 
-    if (!orderId || !sellerId || !rating) {
+    const numericRating = Number(rating);
+    const numericSellerId = Number(sellerId);
+    const numericOrderId = Number(orderId);
+
+    if (
+      !Number.isInteger(numericOrderId) ||
+      !Number.isInteger(numericSellerId)
+    ) {
       return res.status(400).json({
         success: false,
-        message: "Order ID, seller ID and rating are required",
+        message: "Valid order ID and seller ID are required",
       });
     }
-
-    const numericRating = Number(rating);
 
     if (
       !Number.isInteger(numericRating) ||
@@ -31,61 +36,55 @@ router.post("/", protect, async (req, res) => {
       });
     }
 
-    // Make sure the order belongs to the buyer
-    const orderResult = await pool.query(
+    // Make sure the buyer actually bought from this seller.
+    const purchaseResult = await pool.query(
       `
-      SELECT id
+      SELECT orders.id
       FROM orders
-      WHERE id = $1
-        AND user_id = $2
-      `,
-      [orderId, req.user.id]
-    );
-
-    if (orderResult.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "Order not found",
-      });
-    }
-
-    // Make sure the seller actually sold a product in this order
-    const sellerResult = await pool.query(
-      `
-      SELECT products.id
-      FROM order_items
+      JOIN order_items
+        ON orders.id = order_items.order_id
       JOIN products
         ON order_items.product_id = products.id
-      WHERE order_items.order_id = $1
-        AND products.seller_id = $2
+      WHERE orders.id = $1
+        AND orders.user_id = $2
+        AND products.seller_id = $3
       LIMIT 1
       `,
-      [orderId, sellerId]
+      [
+        numericOrderId,
+        req.user.id,
+        numericSellerId,
+      ]
     );
 
-    if (sellerResult.rows.length === 0) {
-      return res.status(400).json({
+    if (purchaseResult.rows.length === 0) {
+      return res.status(403).json({
         success: false,
-        message: "This seller is not connected to this order",
+        message:
+          "You can only review a seller you purchased from",
       });
     }
 
-    // Only allow reviews after delivery
-    const deliveryResult = await pool.query(
+    // Prevent duplicate reviews for the same seller/order.
+    const existingReview = await pool.query(
       `
-      SELECT status
-      FROM orders
-      WHERE id = $1
+      SELECT id
+      FROM seller_reviews
+      WHERE buyer_id = $1
+        AND seller_id = $2
+        AND order_id = $3
       `,
-      [orderId]
+      [
+        req.user.id,
+        numericSellerId,
+        numericOrderId,
+      ]
     );
 
-    const status = deliveryResult.rows[0]?.status;
-
-    if (status !== "delivered") {
-      return res.status(400).json({
+    if (existingReview.rows.length > 0) {
+      return res.status(409).json({
         success: false,
-        message: "You can only review a seller after the order is delivered",
+        message: "You have already reviewed this seller for this order",
       });
     }
 
@@ -93,19 +92,20 @@ router.post("/", protect, async (req, res) => {
       `
       INSERT INTO seller_reviews
       (
-        seller_id,
         buyer_id,
+        seller_id,
         order_id,
         rating,
         review
       )
-      VALUES ($1, $2, $3, $4, $5)
+      VALUES
+      ($1, $2, $3, $4, $5)
       RETURNING *
       `,
       [
-        sellerId,
         req.user.id,
-        orderId,
+        numericSellerId,
+        numericOrderId,
         numericRating,
         review?.trim() || null,
       ]
@@ -119,14 +119,6 @@ router.post("/", protect, async (req, res) => {
   } catch (error) {
     console.error("Create seller review error:", error);
 
-    // Duplicate review
-    if (error.code === "23505") {
-      return res.status(400).json({
-        success: false,
-        message: "You have already reviewed this order",
-      });
-    }
-
     res.status(500).json({
       success: false,
       message: "Failed to submit seller review",
@@ -139,44 +131,27 @@ router.post("/", protect, async (req, res) => {
 // =====================================================
 router.get("/seller/:sellerId", async (req, res) => {
   try {
-    const { sellerId } = req.params;
+    const sellerId = Number(req.params.sellerId);
 
-    const result = await pool.query(
+    if (!Number.isInteger(sellerId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid seller ID",
+      });
+    }
+
+    const ratingResult = await pool.query(
       `
       SELECT
         COUNT(*)::INTEGER AS review_count,
-        COALESCE(ROUND(AVG(rating), 1), 0) AS average_rating
+        COALESCE(ROUND(AVG(rating), 2), 0) AS average_rating
       FROM seller_reviews
       WHERE seller_id = $1
       `,
       [sellerId]
     );
 
-    res.json({
-      success: true,
-      rating: {
-        average: Number(result.rows[0].average_rating),
-        count: result.rows[0].review_count,
-      },
-    });
-  } catch (error) {
-    console.error("Get seller rating error:", error);
-
-    res.status(500).json({
-      success: false,
-      message: "Failed to fetch seller rating",
-    });
-  }
-});
-
-// =====================================================
-// GET SELLER REVIEWS
-// =====================================================
-router.get("/seller/:sellerId/reviews", async (req, res) => {
-  try {
-    const { sellerId } = req.params;
-
-    const result = await pool.query(
+    const reviewsResult = await pool.query(
       `
       SELECT
         seller_reviews.id,
@@ -195,7 +170,8 @@ router.get("/seller/:sellerId/reviews", async (req, res) => {
 
     res.json({
       success: true,
-      reviews: result.rows,
+      rating: ratingResult.rows[0],
+      reviews: reviewsResult.rows,
     });
   } catch (error) {
     console.error("Get seller reviews error:", error);
@@ -206,5 +182,51 @@ router.get("/seller/:sellerId/reviews", async (req, res) => {
     });
   }
 });
+
+// =====================================================
+// BUYER — CHECK WHETHER THEY ALREADY REVIEWED
+// =====================================================
+router.get(
+  "/check/:orderId/:sellerId",
+  protect,
+  async (req, res) => {
+    try {
+      const orderId = Number(req.params.orderId);
+      const sellerId = Number(req.params.sellerId);
+
+      const result = await pool.query(
+        `
+        SELECT
+          id,
+          rating,
+          review,
+          created_at
+        FROM seller_reviews
+        WHERE buyer_id = $1
+          AND order_id = $2
+          AND seller_id = $3
+        `,
+        [
+          req.user.id,
+          orderId,
+          sellerId,
+        ]
+      );
+
+      res.json({
+        success: true,
+        reviewed: result.rows.length > 0,
+        review: result.rows[0] || null,
+      });
+    } catch (error) {
+      console.error("Check seller review error:", error);
+
+      res.status(500).json({
+        success: false,
+        message: "Failed to check seller review",
+      });
+    }
+  }
+);
 
 module.exports = router;
