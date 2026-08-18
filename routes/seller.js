@@ -7,8 +7,9 @@ const router = express.Router();
 const ALLOWED_CURRENCIES = ["USD", "NGN", "EUR", "GBP"];
 
 // =====================================================
-// GET ALL SELLER PRODUCTS
+// SELLER PRODUCTS
 // =====================================================
+
 router.get(
   "/products",
   protect,
@@ -47,6 +48,7 @@ router.get(
 // =====================================================
 // GET ONE SELLER PRODUCT
 // =====================================================
+
 router.get(
   "/products/:id",
   protect,
@@ -80,7 +82,7 @@ router.get(
           LEFT JOIN categories
             ON products.category_id = categories.id
           WHERE products.id = $1
-            AND products.seller_id = $2
+          AND products.seller_id = $2
           `,
           [id, req.user.id]
         );
@@ -89,7 +91,7 @@ router.get(
       if (result.rows.length === 0) {
         return res.status(404).json({
           success: false,
-          message: "Product not found or you do not own this product",
+          message: "Product not found",
         });
       }
 
@@ -111,6 +113,7 @@ router.get(
 // =====================================================
 // ADD SELLER PRODUCT
 // =====================================================
+
 router.post(
   "/products",
   protect,
@@ -166,18 +169,21 @@ router.post(
           name,
           description,
           price,
+          currency,
           image_url,
           category_id,
           stock,
           seller_id
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        VALUES
+        ($1,$2,$3,$4,$5,$6,$7,$8)
         RETURNING *
         `,
         [
           name.trim(),
           description?.trim() || null,
           numericPrice,
+          productCurrency,
           image_url || null,
           category_id || null,
           numericStock,
@@ -204,6 +210,7 @@ router.post(
 // =====================================================
 // UPDATE SELLER PRODUCT
 // =====================================================
+
 router.put(
   "/products/:id",
   protect,
@@ -216,6 +223,7 @@ router.put(
         name,
         description,
         price,
+        currency = "USD",
         image_url,
         category_id,
         stock,
@@ -230,11 +238,19 @@ router.put(
 
       const numericPrice = Number(price);
       const numericStock = Number(stock);
+      const productCurrency = String(currency).toUpperCase();
 
       if (!Number.isFinite(numericPrice) || numericPrice < 0) {
         return res.status(400).json({
           success: false,
           message: "Invalid product price",
+        });
+      }
+
+      if (!ALLOWED_CURRENCIES.includes(productCurrency)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid currency. Use USD, NGN, EUR or GBP.",
         });
       }
 
@@ -255,16 +271,18 @@ router.put(
             name = $1,
             description = $2,
             price = $3,
-            image_url = $4,
-            category_id = $5,
-            stock = $6
-          WHERE id = $7
+            currency = $4,
+            image_url = $5,
+            category_id = $6,
+            stock = $7
+          WHERE id = $8
           RETURNING *
           `,
           [
             name.trim(),
             description?.trim() || null,
             numericPrice,
+            productCurrency,
             image_url || null,
             category_id || null,
             numericStock,
@@ -279,17 +297,19 @@ router.put(
             name = $1,
             description = $2,
             price = $3,
-            image_url = $4,
-            category_id = $5,
-            stock = $6
-          WHERE id = $7
-            AND seller_id = $8
+            currency = $4,
+            image_url = $5,
+            category_id = $6,
+            stock = $7
+          WHERE id = $8
+          AND seller_id = $9
           RETURNING *
           `,
           [
             name.trim(),
             description?.trim() || null,
             numericPrice,
+            productCurrency,
             image_url || null,
             category_id || null,
             numericStock,
@@ -302,7 +322,7 @@ router.put(
       if (result.rows.length === 0) {
         return res.status(404).json({
           success: false,
-          message: "Product not found or you do not own this product",
+          message: "Product not found",
         });
       }
 
@@ -325,6 +345,7 @@ router.put(
 // =====================================================
 // DELETE SELLER PRODUCT
 // =====================================================
+
 router.delete(
   "/products/:id",
   protect,
@@ -349,7 +370,7 @@ router.delete(
           `
           DELETE FROM products
           WHERE id = $1
-            AND seller_id = $2
+          AND seller_id = $2
           RETURNING *
           `,
           [id, req.user.id]
@@ -359,7 +380,7 @@ router.delete(
       if (result.rows.length === 0) {
         return res.status(404).json({
           success: false,
-          message: "Product not found or you do not own this product",
+          message: "Product not found",
         });
       }
 
@@ -382,6 +403,7 @@ router.delete(
 // =====================================================
 // SELLER DASHBOARD STATS
 // =====================================================
+
 router.get(
   "/stats",
   protect,
@@ -392,7 +414,7 @@ router.get(
 
       const productsResult = await pool.query(
         `
-        SELECT COUNT(*)::INTEGER AS product_count
+        SELECT COUNT(*) AS product_count
         FROM products
         WHERE seller_id = $1
         `,
@@ -401,12 +423,7 @@ router.get(
 
       const ordersResult = await pool.query(
         `
-        SELECT
-          COUNT(DISTINCT orders.id)::INTEGER AS order_count,
-          COALESCE(
-            SUM(order_items.price * order_items.quantity),
-            0
-          ) AS total_sales
+        SELECT COUNT(DISTINCT orders.id) AS order_count
         FROM orders
         JOIN order_items
           ON orders.id = order_items.order_id
@@ -417,16 +434,39 @@ router.get(
         [sellerId]
       );
 
+      const salesResult = await pool.query(
+        `
+        SELECT COALESCE(
+          SUM(order_items.price * order_items.quantity),
+          0
+        ) AS total_sales
+        FROM order_items
+        JOIN products
+          ON order_items.product_id = products.id
+        JOIN orders
+          ON order_items.order_id = orders.id
+        WHERE products.seller_id = $1
+        AND orders.status != 'cancelled'
+        `,
+        [sellerId]
+      );
+
       res.json({
         success: true,
         stats: {
-          products: productsResult.rows[0].product_count,
-          orders: ordersResult.rows[0].order_count,
-          sales: Number(ordersResult.rows[0].total_sales),
+          products: Number(
+            productsResult.rows[0].product_count
+          ),
+          orders: Number(
+            ordersResult.rows[0].order_count
+          ),
+          sales: Number(
+            salesResult.rows[0].total_sales
+          ),
         },
       });
     } catch (error) {
-      console.error("Seller stats error:", error);
+      console.error("Get seller stats error:", error);
 
       res.status(500).json({
         success: false,
@@ -439,6 +479,7 @@ router.get(
 // =====================================================
 // SELLER ORDERS
 // =====================================================
+
 router.get(
   "/orders",
   protect,
@@ -448,32 +489,33 @@ router.get(
       const result = await pool.query(
         `
         SELECT
-          orders.id AS order_id,
+          orders.id,
           orders.status,
           orders.created_at,
-          orders.user_id AS buyer_id,
+          orders.user_id,
+          users.name AS customer_name,
+          users.email AS customer_email,
 
-          users.name AS buyer_name,
-          users.email AS buyer_email,
-
-          products.id AS product_id,
+          order_items.product_id,
           products.name AS product_name,
 
           order_items.quantity,
           order_items.price,
 
+          products.currency,
+
           (order_items.quantity * order_items.price) AS item_total
 
         FROM orders
+
+        JOIN users
+          ON orders.user_id = users.id
 
         JOIN order_items
           ON orders.id = order_items.order_id
 
         JOIN products
           ON order_items.product_id = products.id
-
-        JOIN users
-          ON orders.user_id = users.id
 
         WHERE products.seller_id = $1
 
@@ -487,7 +529,7 @@ router.get(
         orders: result.rows,
       });
     } catch (error) {
-      console.error("Seller orders error:", error);
+      console.error("Get seller orders error:", error);
 
       res.status(500).json({
         success: false,
