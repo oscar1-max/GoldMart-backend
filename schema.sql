@@ -98,3 +98,42 @@ ON seller_reviews(buyer_id);
 
 CREATE INDEX IF NOT EXISTS seller_reviews_order_id_idx
 ON seller_reviews(order_id);
+
+-- =====================================================
+-- PAYMENTS
+-- =====================================================
+
+CREATE TABLE IF NOT EXISTS payments (
+  id SERIAL PRIMARY KEY,
+
+  order_id INTEGER
+    REFERENCES orders(id)
+    ON DELETE SET NULL,
+
+  user_id INTEGER NOT NULL
+    REFERENCES users(id)
+    ON DELETE CASCADE,
+
+  reference VARCHAR(255) UNIQUE NOT NULL,
+
+  amount DECIMAL(12, 2) NOT NULL,
+
+  currency VARCHAR(3) NOT NULL DEFAULT 'USD',
+
+  status VARCHAR(30) NOT NULL DEFAULT 'pending',
+
+  payment_method VARCHAR(50),
+
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS payments_user_id_idx
+ON payments(user_id);
+
+CREATE INDEX IF NOT EXISTS payments_order_id_idx
+ON payments(order_id);
+
+CREATE INDEX IF NOT EXISTS payments_reference_idx
+ON payments(reference);
