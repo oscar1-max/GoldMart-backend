@@ -77,14 +77,11 @@ async function setupDatabase() {
     // SELLER REVIEWS CONSTRAINT
     // -------------------------------------------------
 
-    // Remove the old constraint if it exists.
     await pool.query(`
       ALTER TABLE seller_reviews
       DROP CONSTRAINT IF EXISTS seller_reviews_buyer_id_order_id_key;
     `);
 
-    // Make sure one buyer can review each seller
-    // only once for the same order.
     await pool.query(`
       CREATE UNIQUE INDEX IF NOT EXISTS
       seller_reviews_buyer_seller_order_unique
@@ -111,6 +108,60 @@ async function setupDatabase() {
       CREATE INDEX IF NOT EXISTS
       seller_reviews_order_id_idx
       ON seller_reviews(order_id);
+    `);
+
+    // -------------------------------------------------
+    // PAYMENTS TABLE
+    // -------------------------------------------------
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS payments (
+        id SERIAL PRIMARY KEY,
+
+        order_id INTEGER
+          REFERENCES orders(id)
+          ON DELETE SET NULL,
+
+        user_id INTEGER NOT NULL
+          REFERENCES users(id)
+          ON DELETE CASCADE,
+
+        reference VARCHAR(255) UNIQUE NOT NULL,
+
+        amount DECIMAL(12, 2) NOT NULL,
+
+        currency VARCHAR(3) NOT NULL DEFAULT 'USD',
+
+        status VARCHAR(30) NOT NULL DEFAULT 'pending',
+
+        payment_method VARCHAR(50),
+
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    // -------------------------------------------------
+    // PAYMENT INDEXES
+    // -------------------------------------------------
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS
+      payments_user_id_idx
+      ON payments(user_id);
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS
+      payments_order_id_idx
+      ON payments(order_id);
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS
+      payments_reference_idx
+      ON payments(reference);
     `);
 
     console.log("Database setup completed successfully");
