@@ -168,7 +168,7 @@ router.post(
               reference,
 
               callback_url:
-                `${FRONTEND_URL}/checkout`,
+                `${FRONTEND_URL}/order-success`,
 
               metadata: {
                 user_id:
