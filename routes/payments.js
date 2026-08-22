@@ -26,7 +26,8 @@ router.get("/config", protect, (req, res) => {
       PAYSTACK_SECRET_KEY
     ),
     currency: "NGN",
-    usd_to_ngn_rate: USD_TO_NGN_RATE,
+    usd_to_ngn_rate:
+      USD_TO_NGN_RATE,
   });
 });
 
@@ -57,7 +58,8 @@ router.post(
       if (!email) {
         return res.status(400).json({
           success: false,
-          message: "Email is required.",
+          message:
+            "Email is required.",
         });
       }
 
@@ -82,15 +84,16 @@ router.post(
           .toUpperCase();
 
       // =================================================
-      // GOLDMART ACCEPTS USD PRICES
-      // PAYSTACK PAYMENT IS MADE IN NGN
+      // GOLDMART USES USD PRICES
+      // PAYSTACK RECEIVES NGN
       // =================================================
 
       let amountUSD;
       let amountNGN;
 
       if (
-        requestedCurrency === "USD"
+        requestedCurrency ===
+        "USD"
       ) {
         amountUSD =
           numericAmount;
@@ -101,7 +104,8 @@ router.post(
               USD_TO_NGN_RATE
           );
       } else if (
-        requestedCurrency === "NGN"
+        requestedCurrency ===
+        "NGN"
       ) {
         amountNGN =
           numericAmount;
@@ -167,6 +171,9 @@ router.post(
               currency: "NGN",
               reference,
 
+              // IMPORTANT:
+              // Return customer to order-success
+              // after Paystack payment.
               callback_url:
                 `${FRONTEND_URL}/order-success`,
 
@@ -218,11 +225,6 @@ router.post(
 
       // =================================================
       // SAVE PAYMENT
-      //
-      // amount = NGN amount sent to Paystack
-      // currency = NGN
-      //
-      // Original USD amount is kept in metadata
       // =================================================
 
       await pool.query(
@@ -285,12 +287,14 @@ router.post(
           amount_ngn:
             amountNGN,
 
-          currency: "NGN",
+          currency:
+            "NGN",
 
           exchange_rate:
             USD_TO_NGN_RATE,
 
-          status: "pending",
+          status:
+            "pending",
         },
       });
     } catch (error) {
@@ -413,7 +417,6 @@ router.get(
 
       // =================================================
       // PAYSTACK RETURNS KOBO
-      // CONVERT BACK TO NAIRA
       // =================================================
 
       const verifiedAmountNGN =
