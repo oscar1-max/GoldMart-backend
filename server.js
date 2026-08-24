@@ -11,12 +11,13 @@ const app = express();
 const PORT = process.env.PORT || 4000;
 
 // =====================================================
-// CORS
+// MIDDLEWARE
 // =====================================================
 
 app.use(
   cors({
     origin: true,
+    credentials: true,
     methods: [
       "GET",
       "POST",
@@ -29,36 +30,11 @@ app.use(
       "Content-Type",
       "Authorization",
       "Accept",
-      "Origin",
-      "X-Requested-With",
     ],
   })
 );
 
-// Explicitly handle browser preflight requests
-app.options("*", cors());
-
-// =====================================================
-// BODY PARSER
-// =====================================================
-
-app.use(
-  express.json({
-    limit: "10mb",
-  })
-);
-
-// =====================================================
-// REQUEST LOGGING
-// =====================================================
-
-app.use((req, res, next) => {
-  console.log(
-    `[${new Date().toISOString()}] ${req.method} ${req.originalUrl}`
-  );
-
-  next();
-});
+app.use(express.json());
 
 // =====================================================
 // DATABASE SETUP
@@ -79,8 +55,7 @@ async function setupDatabase() {
     await pool.query(`
       UPDATE products
       SET currency = 'USD'
-      WHERE currency IS NULL
-         OR currency = '';
+      WHERE currency IS NULL OR currency = '';
     `);
 
     // -------------------------------------------------
@@ -118,18 +93,13 @@ async function setupDatabase() {
 
     await pool.query(`
       ALTER TABLE seller_reviews
-      DROP CONSTRAINT IF EXISTS
-      seller_reviews_buyer_id_order_id_key;
+      DROP CONSTRAINT IF EXISTS seller_reviews_buyer_id_order_id_key;
     `);
 
     await pool.query(`
       CREATE UNIQUE INDEX IF NOT EXISTS
       seller_reviews_buyer_seller_order_unique
-      ON seller_reviews(
-        buyer_id,
-        seller_id,
-        order_id
-      );
+      ON seller_reviews(buyer_id, seller_id, order_id);
     `);
 
     // -------------------------------------------------
@@ -170,28 +140,19 @@ async function setupDatabase() {
           REFERENCES users(id)
           ON DELETE CASCADE,
 
-        reference VARCHAR(255)
-          UNIQUE
-          NOT NULL,
+        reference VARCHAR(255) UNIQUE NOT NULL,
 
-        amount DECIMAL(12, 2)
-          NOT NULL,
+        amount DECIMAL(12, 2) NOT NULL,
 
-        currency VARCHAR(3)
-          NOT NULL
-          DEFAULT 'NGN',
+        currency VARCHAR(3) NOT NULL DEFAULT 'NGN',
 
-        status VARCHAR(30)
-          NOT NULL
-          DEFAULT 'pending',
+        status VARCHAR(30) NOT NULL DEFAULT 'pending',
 
         payment_method VARCHAR(50),
 
-        created_at TIMESTAMP
-          DEFAULT CURRENT_TIMESTAMP,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
-        updated_at TIMESTAMP
-          DEFAULT CURRENT_TIMESTAMP
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
 
@@ -263,25 +224,20 @@ app.get("/api/health", (req, res) => {
 app.use((req, res) => {
   res.status(404).json({
     success: false,
-    message: "API route not found",
+    message: "Route not found",
     path: req.originalUrl,
-    method: req.method,
   });
 });
 
 // =====================================================
-// GLOBAL ERROR HANDLER
+// ERROR HANDLER
 // =====================================================
 
 app.use((error, req, res, next) => {
   console.error(
-    "Global server error:",
+    "Unhandled server error:",
     error
   );
-
-  if (res.headersSent) {
-    return next(error);
-  }
 
   res.status(500).json({
     success: false,
@@ -298,14 +254,7 @@ app.listen(PORT, async () => {
     `GoldMart API running on port ${PORT}`
   );
 
-  try {
-    await testDatabaseConnection();
+  await testDatabaseConnection();
 
-    await setupDatabase();
-  } catch (error) {
-    console.error(
-      "Server startup error:",
-      error
-    );
-  }
+  await setupDatabase();
 });
