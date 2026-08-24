@@ -17,27 +17,12 @@ function normalizeCurrency(currency) {
 
 // =====================================================
 // DELIVERY FEE
-// GoldMart product prices are USD.
-// Delivery is currently FREE at checkout.
+// GoldMart checkout currently uses FREE delivery.
+// Keep this consistent with checkout.
 // =====================================================
 
-function getDeliveryFee(currency) {
-  const fees = {
-    NGN: 2500,
-    USD: 0,
-    GHS: 25,
-    ZAR: 250,
-    KES: 2500,
-    XOF: 2500,
-    GBP: 25,
-    EUR: 25,
-  };
-
-  return (
-    fees[
-      normalizeCurrency(currency)
-    ] ?? 0
-  );
+function getDeliveryFee() {
+  return 0;
 }
 
 // =====================================================
@@ -48,8 +33,7 @@ router.post(
   "/",
   protect,
   async (req, res) => {
-    const client =
-      await pool.connect();
+    const client = await pool.connect();
 
     try {
       const {
@@ -65,9 +49,7 @@ router.post(
         });
       }
 
-      await client.query(
-        "BEGIN"
-      );
+      await client.query("BEGIN");
 
       // =================================================
       // FIND VERIFIED PAYMENT
@@ -90,12 +72,9 @@ router.post(
         );
 
       if (
-        paymentResult.rows
-          .length === 0
+        paymentResult.rows.length === 0
       ) {
-        await client.query(
-          "ROLLBACK"
-        );
+        await client.query("ROLLBACK");
 
         return res.status(400).json({
           success: false,
@@ -124,14 +103,10 @@ router.post(
             FROM orders
             WHERE id = $1
             `,
-            [
-              payment.order_id,
-            ]
+            [payment.order_id]
           );
 
-        await client.query(
-          "ROLLBACK"
-        );
+        await client.query("ROLLBACK");
 
         return res.json({
           success: true,
@@ -158,12 +133,9 @@ router.post(
         );
 
       if (
-        cartResult.rows.length ===
-        0
+        cartResult.rows.length === 0
       ) {
-        await client.query(
-          "ROLLBACK"
-        );
+        await client.query("ROLLBACK");
 
         return res.status(400).json({
           success: false,
@@ -200,8 +172,7 @@ router.post(
             ON cart_items.product_id =
                products.id
 
-          WHERE cart_items.cart_id =
-                $1
+          WHERE cart_items.cart_id = $1
 
           FOR UPDATE OF products
           `,
@@ -209,12 +180,9 @@ router.post(
         );
 
       if (
-        cartItemsResult.rows
-          .length === 0
+        cartItemsResult.rows.length === 0
       ) {
-        await client.query(
-          "ROLLBACK"
-        );
+        await client.query("ROLLBACK");
 
         return res.status(400).json({
           success: false,
@@ -239,12 +207,8 @@ router.post(
           )
         );
 
-      if (
-        currencies.length !== 1
-      ) {
-        await client.query(
-          "ROLLBACK"
-        );
+      if (currencies.length !== 1) {
+        await client.query("ROLLBACK");
 
         return res.status(400).json({
           success: false,
@@ -257,27 +221,25 @@ router.post(
         currencies[0];
 
       // =================================================
-      // GOLDMART CHECKOUT IS USD
-      // PAYSTACK PAYMENT IS NGN
-      //
-      // Therefore:
-      //
-      // Order total = USD
-      // Payment total = USD × exchange rate
+      // SUPPORTED GOLDMART CURRENCIES
       // =================================================
 
+      const supportedCurrencies = [
+        "USD",
+        "NGN",
+      ];
+
       if (
-        orderCurrency !==
-        "USD"
+        !supportedCurrencies.includes(
+          orderCurrency
+        )
       ) {
-        await client.query(
-          "ROLLBACK"
-        );
+        await client.query("ROLLBACK");
 
         return res.status(400).json({
           success: false,
           message:
-            "GoldMart checkout currently supports USD products only.",
+            `GoldMart currently supports USD and NGN checkout. Product currency ${orderCurrency} is not supported.`,
         });
       }
 
@@ -288,8 +250,7 @@ router.post(
       let productsTotal = 0;
 
       for (
-        const item of
-          cartItemsResult.rows
+        const item of cartItemsResult.rows
       ) {
         const price =
           Number(item.price);
@@ -301,17 +262,11 @@ router.post(
           Number(item.stock);
 
         if (
-          !Number.isFinite(
-            price
-          ) ||
-          !Number.isFinite(
-            quantity
-          ) ||
+          !Number.isFinite(price) ||
+          !Number.isFinite(quantity) ||
           quantity <= 0
         ) {
-          await client.query(
-            "ROLLBACK"
-          );
+          await client.query("ROLLBACK");
 
           return res.status(400).json({
             success: false,
@@ -320,12 +275,8 @@ router.post(
           });
         }
 
-        if (
-          stock < quantity
-        ) {
-          await client.query(
-            "ROLLBACK"
-          );
+        if (stock < quantity) {
+          await client.query("ROLLBACK");
 
           return res.status(400).json({
             success: false,
@@ -338,37 +289,44 @@ router.post(
           price * quantity;
       }
 
+      // =================================================
+      // DELIVERY
+      // =================================================
+
       const deliveryFee =
-        productsTotal > 0
-          ? getDeliveryFee(
-              orderCurrency
-            )
-          : 0;
+        getDeliveryFee(orderCurrency);
 
       const calculatedTotal =
         productsTotal +
         deliveryFee;
 
       // =================================================
-      // PAYMENT AMOUNT IS STORED IN NGN
+      // PAYMENT IS ALWAYS NGN IN PAYSTACK
       //
-      // Example:
+      // USD PRODUCT:
+      // $100 × 1500 = ₦150,000
       //
-      // $198 USD
-      // × 1500
-      // = ₦297,000
+      // NGN PRODUCT:
+      // ₦10,000 = ₦10,000
       // =================================================
 
       const paymentAmountNGN =
-        Number(
-          payment.amount
-        );
+        Number(payment.amount);
 
-      const expectedPaymentAmountNGN =
-        Math.round(
-          calculatedTotal *
-            USD_TO_NGN_RATE
-        );
+      let expectedPaymentAmountNGN;
+
+      if (orderCurrency === "USD") {
+        expectedPaymentAmountNGN =
+          Math.round(
+            calculatedTotal *
+              USD_TO_NGN_RATE
+          );
+      } else {
+        expectedPaymentAmountNGN =
+          Math.round(
+            calculatedTotal
+          );
+      }
 
       if (
         !Number.isFinite(
@@ -379,25 +337,27 @@ router.post(
             expectedPaymentAmountNGN
         ) > 1
       ) {
-        await client.query(
-          "ROLLBACK"
-        );
+        await client.query("ROLLBACK");
 
         return res.status(400).json({
           success: false,
           message:
             "Payment amount does not match the order total.",
           details: {
-            order_total_usd:
+            order_currency:
+              orderCurrency,
+
+            order_total:
               Number(
-                calculatedTotal.toFixed(
-                  2
-                )
+                calculatedTotal.toFixed(2)
               ),
+
             expected_payment_ngn:
               expectedPaymentAmountNGN,
+
             received_payment_ngn:
               paymentAmountNGN,
+
             exchange_rate:
               USD_TO_NGN_RATE,
           },
@@ -443,8 +403,7 @@ router.post(
       // =================================================
 
       for (
-        const item of
-          cartItemsResult.rows
+        const item of cartItemsResult.rows
       ) {
         await client.query(
           `
@@ -476,8 +435,7 @@ router.post(
         await client.query(
           `
           UPDATE products
-          SET stock =
-              stock - $1
+          SET stock = stock - $1
           WHERE id = $2
           `,
           [
@@ -496,8 +454,7 @@ router.post(
         UPDATE payments
         SET
           order_id = $1,
-          updated_at =
-            CURRENT_TIMESTAMP
+          updated_at = CURRENT_TIMESTAMP
         WHERE id = $2
         `,
         [
@@ -518,9 +475,7 @@ router.post(
         [cartId]
       );
 
-      await client.query(
-        "COMMIT"
-      );
+      await client.query("COMMIT");
 
       // =================================================
       // SUCCESS
@@ -549,12 +504,22 @@ router.post(
         },
 
         delivery,
+
+        order_currency:
+          orderCurrency,
+
+        order_total:
+          calculatedTotal,
+
+        payment_amount_ngn:
+          paymentAmountNGN,
+
+        exchange_rate:
+          USD_TO_NGN_RATE,
       });
     } catch (error) {
       try {
-        await client.query(
-          "ROLLBACK"
-        );
+        await client.query("ROLLBACK");
       } catch {}
 
       console.error(
@@ -600,8 +565,7 @@ router.get(
       const orders = [];
 
       for (
-        const order of
-          ordersResult.rows
+        const order of ordersResult.rows
       ) {
         const itemsResult =
           await pool.query(
@@ -614,7 +578,8 @@ router.get(
 
               products.name,
               products.image_url,
-              products.seller_id
+              products.seller_id,
+              products.currency
 
             FROM order_items
 
@@ -622,8 +587,7 @@ router.get(
               ON order_items.product_id =
                  products.id
 
-            WHERE order_items.order_id =
-                  $1
+            WHERE order_items.order_id = $1
             `,
             [order.id]
           );
@@ -693,8 +657,7 @@ router.get(
             ON orders.user_id =
                users.id
 
-          WHERE products.seller_id =
-                $1
+          WHERE products.seller_id = $1
 
           ORDER BY orders.created_at DESC
           `,
@@ -704,8 +667,7 @@ router.get(
       const orders = [];
 
       for (
-        const order of
-          ordersResult.rows
+        const order of ordersResult.rows
       ) {
         const itemsResult =
           await pool.query(
@@ -719,7 +681,8 @@ router.get(
               order_items.quantity,
               order_items.price,
 
-              products.image_url
+              products.image_url,
+              products.currency
 
             FROM order_items
 
@@ -727,14 +690,10 @@ router.get(
               ON order_items.product_id =
                  products.id
 
-            WHERE order_items.order_id =
-                  $1
+            WHERE order_items.order_id = $1
+              AND products.seller_id = $2
 
-              AND products.seller_id =
-                  $2
-
-            ORDER BY
-              order_items.id ASC
+            ORDER BY order_items.id ASC
             `,
             [
               order.id,
@@ -835,8 +794,8 @@ router.put(
         );
 
       if (
-        sellerOrderCheck.rows
-          .length === 0
+        sellerOrderCheck.rows.length ===
+        0
       ) {
         return res.status(404).json({
           success: false,
@@ -849,11 +808,8 @@ router.put(
         await pool.query(
           `
           UPDATE orders
-
           SET status = $1
-
           WHERE id = $2
-
           RETURNING
             id,
             user_id,
@@ -917,8 +873,7 @@ router.get(
         );
 
       if (
-        orderResult.rows
-          .length === 0
+        orderResult.rows.length === 0
       ) {
         return res.status(404).json({
           success: false,
@@ -938,7 +893,8 @@ router.get(
 
             products.name,
             products.image_url,
-            products.seller_id
+            products.seller_id,
+            products.currency
 
           FROM order_items
 
@@ -946,8 +902,7 @@ router.get(
             ON order_items.product_id =
                products.id
 
-          WHERE order_items.order_id =
-                $1
+          WHERE order_items.order_id = $1
           `,
           [orderId]
         );
