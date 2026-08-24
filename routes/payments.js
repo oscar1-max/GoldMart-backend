@@ -16,6 +16,14 @@ const USD_TO_NGN_RATE =
   Number(process.env.USD_TO_NGN_RATE) || 1500;
 
 // =====================================================
+// NORMALIZE CURRENCY
+// =====================================================
+
+function normalizeCurrency(currency) {
+  return String(currency || "USD").toUpperCase();
+}
+
+// =====================================================
 // CHECK PAYSTACK CONFIGURATION
 // =====================================================
 
@@ -80,12 +88,13 @@ router.post(
       }
 
       const requestedCurrency =
-        String(currency)
-          .toUpperCase();
+        normalizeCurrency(currency);
 
       // =================================================
-      // GOLDMART USES USD PRICES
-      // PAYSTACK RECEIVES NGN
+      // GOLDMART PRODUCT PRICES
+      //
+      // GoldMart displays product prices in USD.
+      // Paystack receives NGN.
       // =================================================
 
       let amountUSD;
@@ -158,22 +167,26 @@ router.post(
           "https://api.paystack.co/transaction/initialize",
           {
             method: "POST",
+
             headers: {
               Authorization:
                 `Bearer ${PAYSTACK_SECRET_KEY}`,
+
               "Content-Type":
                 "application/json",
             },
+
             body: JSON.stringify({
               email,
+
               amount:
                 amountInKobo,
-              currency: "NGN",
+
+              currency:
+                "NGN",
+
               reference,
 
-              // IMPORTANT:
-              // Return customer to order-success
-              // after Paystack payment.
               callback_url:
                 `${FRONTEND_URL}/order-success`,
 
@@ -256,11 +269,7 @@ router.post(
         ]
       );
 
-      // =================================================
-      // RESPONSE
-      // =================================================
-
-      res.json({
+      return res.json({
         success: true,
 
         message:
@@ -303,7 +312,7 @@ router.post(
         error
       );
 
-      res.status(500).json({
+      return res.status(500).json({
         success: false,
         message:
           "Failed to initialize payment.",
@@ -314,11 +323,23 @@ router.post(
 
 // =====================================================
 // VERIFY PAYMENT
+//
+// IMPORTANT:
+// This endpoint does NOT use protect.
+//
+// Why?
+// Paystack redirects the customer back to:
+// /order-success?reference=GM-...
+//
+// We identify the GoldMart payment using the
+// unique payment reference, then independently
+// verify that reference directly with Paystack.
+//
+// Order creation remains protected.
 // =====================================================
 
 router.get(
   "/verify/:reference",
-  protect,
   async (req, res) => {
     try {
       if (!PAYSTACK_SECRET_KEY) {
@@ -329,9 +350,10 @@ router.get(
         });
       }
 
-      const {
-        reference,
-      } = req.params;
+      const reference =
+        String(
+          req.params.reference || ""
+        ).trim();
 
       if (!reference) {
         return res.status(400).json({
@@ -348,16 +370,22 @@ router.get(
       const paymentResult =
         await pool.query(
           `
-          SELECT *
+          SELECT
+            id,
+            order_id,
+            user_id,
+            reference,
+            amount,
+            currency,
+            status,
+            payment_method,
+            created_at,
+            updated_at
           FROM payments
           WHERE reference = $1
-            AND user_id = $2
           LIMIT 1
           `,
-          [
-            reference,
-            req.user.id,
-          ]
+          [reference]
         );
 
       if (
@@ -375,7 +403,54 @@ router.get(
         paymentResult.rows[0];
 
       // =================================================
-      // VERIFY WITH PAYSTACK
+      // IF ALREADY SUCCESSFUL
+      // =================================================
+
+      if (
+        payment.status ===
+        "success"
+      ) {
+        return res.json({
+          success: true,
+
+          message:
+            "Payment already verified.",
+
+          payment: {
+            reference:
+              payment.reference,
+
+            status:
+              "success",
+
+            amount_ngn:
+              Number(
+                payment.amount
+              ),
+
+            currency:
+              normalizeCurrency(
+                payment.currency
+              ),
+
+            amount_usd:
+              Number(
+                (
+                  Number(
+                    payment.amount
+                  ) /
+                  USD_TO_NGN_RATE
+                ).toFixed(2)
+              ),
+
+            exchange_rate:
+              USD_TO_NGN_RATE,
+          },
+        });
+      }
+
+      // =================================================
+      // VERIFY DIRECTLY WITH PAYSTACK
       // =================================================
 
       const response =
@@ -385,9 +460,13 @@ router.get(
           )}`,
           {
             method: "GET",
+
             headers: {
               Authorization:
                 `Bearer ${PAYSTACK_SECRET_KEY}`,
+
+              Accept:
+                "application/json",
             },
           }
         );
@@ -415,6 +494,14 @@ router.get(
       const transaction =
         data.data;
 
+      if (!transaction) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Paystack returned no transaction data.",
+        });
+      }
+
       // =================================================
       // PAYSTACK RETURNS KOBO
       // =================================================
@@ -425,15 +512,45 @@ router.get(
         ) / 100;
 
       const verifiedCurrency =
-        String(
-          transaction.currency ||
-            ""
-        ).toUpperCase();
+        normalizeCurrency(
+          transaction.currency
+        );
 
       const expectedAmountNGN =
         Number(
           payment.amount
         );
+
+      // =================================================
+      // VERIFY REFERENCE
+      // =================================================
+
+      if (
+        String(
+          transaction.reference
+        ) !== reference
+      ) {
+        await pool.query(
+          `
+          UPDATE payments
+          SET
+            status = $1,
+            updated_at =
+              CURRENT_TIMESTAMP
+          WHERE id = $2
+          `,
+          [
+            "reference_mismatch",
+            payment.id,
+          ]
+        );
+
+        return res.status(400).json({
+          success: false,
+          message:
+            "Payment reference mismatch.",
+        });
+      }
 
       // =================================================
       // VERIFY CURRENCY
@@ -492,8 +609,17 @@ router.get(
 
         return res.status(400).json({
           success: false,
+
           message:
             "Payment amount does not match the expected amount.",
+
+          details: {
+            expected_ngn:
+              expectedAmountNGN,
+
+            received_ngn:
+              verifiedAmountNGN,
+          },
         });
       }
 
@@ -502,7 +628,10 @@ router.get(
       // =================================================
 
       const paymentStatus =
-        transaction.status ===
+        String(
+          transaction.status ||
+            ""
+        ).toLowerCase() ===
         "success"
           ? "success"
           : "failed";
@@ -522,22 +651,52 @@ router.get(
         ]
       );
 
-      res.json({
-        success:
-          paymentStatus ===
-          "success",
+      if (
+        paymentStatus !==
+        "success"
+      ) {
+        return res.status(400).json({
+          success: false,
+
+          message:
+            "Payment was not successful.",
+
+          payment: {
+            reference,
+
+            status:
+              paymentStatus,
+
+            amount_ngn:
+              verifiedAmountNGN,
+
+            currency:
+              verifiedCurrency,
+          },
+        });
+      }
+
+      // =================================================
+      // SUCCESS
+      // =================================================
+
+      return res.json({
+        success: true,
 
         message:
-          paymentStatus ===
-          "success"
-            ? "Payment verified successfully."
-            : "Payment was not successful.",
+          "Payment verified successfully.",
 
         payment: {
+          id:
+            payment.id,
+
+          user_id:
+            payment.user_id,
+
           reference,
 
           status:
-            paymentStatus,
+            "success",
 
           amount_ngn:
             verifiedAmountNGN,
@@ -564,6 +723,9 @@ router.get(
 
           channel:
             transaction.channel,
+
+          order_id:
+            payment.order_id,
         },
       });
     } catch (error) {
@@ -572,7 +734,7 @@ router.get(
         error
       );
 
-      res.status(500).json({
+      return res.status(500).json({
         success: false,
         message:
           "Failed to verify payment.",
@@ -590,9 +752,18 @@ router.get(
   protect,
   async (req, res) => {
     try {
-      const {
-        reference,
-      } = req.params;
+      const reference =
+        String(
+          req.params.reference || ""
+        ).trim();
+
+      if (!reference) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Payment reference is required.",
+        });
+      }
 
       const result =
         await pool.query(
@@ -630,7 +801,7 @@ router.get(
         });
       }
 
-      res.json({
+      return res.json({
         success: true,
         payment:
           result.rows[0],
@@ -641,7 +812,7 @@ router.get(
         error
       );
 
-      res.status(500).json({
+      return res.status(500).json({
         success: false,
         message:
           "Failed to fetch payment.",
