@@ -140,3 +140,41 @@ ON seller_reviews(buyer_id);
 
 CREATE INDEX IF NOT EXISTS seller_reviews_order_id_idx
 ON seller_reviews(order_id);
+-- =====================================================
+-- NOTIFICATIONS
+-- =====================================================
+
+CREATE TABLE IF NOT EXISTS notifications (
+  id SERIAL PRIMARY KEY,
+
+  user_id INTEGER NOT NULL
+    REFERENCES users(id)
+    ON DELETE CASCADE,
+
+  title VARCHAR(255) NOT NULL,
+
+  message TEXT NOT NULL,
+
+  type VARCHAR(50) DEFAULT 'general',
+
+  is_read BOOLEAN NOT NULL DEFAULT FALSE,
+
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- =====================================================
+-- NOTIFICATION INDEXES
+-- =====================================================
+
+CREATE INDEX IF NOT EXISTS
+notifications_user_id_idx
+ON notifications(user_id);
+
+CREATE INDEX IF NOT EXISTS
+notifications_is_read_idx
+ON notifications(is_read);
+
+CREATE INDEX IF NOT EXISTS
+notifications_created_at_idx
+ON notifications(created_at);
+
