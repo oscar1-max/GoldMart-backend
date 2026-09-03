@@ -93,13 +93,18 @@ async function setupDatabase() {
 
     await pool.query(`
       ALTER TABLE seller_reviews
-      DROP CONSTRAINT IF EXISTS seller_reviews_buyer_id_order_id_key;
+      DROP CONSTRAINT IF EXISTS
+      seller_reviews_buyer_id_order_id_key;
     `);
 
     await pool.query(`
       CREATE UNIQUE INDEX IF NOT EXISTS
       seller_reviews_buyer_seller_order_unique
-      ON seller_reviews(buyer_id, seller_id, order_id);
+      ON seller_reviews(
+        buyer_id,
+        seller_id,
+        order_id
+      );
     `);
 
     // -------------------------------------------------
@@ -125,6 +130,55 @@ async function setupDatabase() {
     `);
 
     // -------------------------------------------------
+    // NOTIFICATIONS TABLE
+    // -------------------------------------------------
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS notifications (
+        id SERIAL PRIMARY KEY,
+
+        user_id INTEGER NOT NULL
+          REFERENCES users(id)
+          ON DELETE CASCADE,
+
+        title VARCHAR(255) NOT NULL,
+
+        message TEXT NOT NULL,
+
+        type VARCHAR(50)
+          DEFAULT 'general',
+
+        is_read BOOLEAN
+          NOT NULL DEFAULT FALSE,
+
+        created_at TIMESTAMP
+          DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    // -------------------------------------------------
+    // NOTIFICATION INDEXES
+    // -------------------------------------------------
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS
+      notifications_user_id_idx
+      ON notifications(user_id);
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS
+      notifications_is_read_idx
+      ON notifications(is_read);
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS
+      notifications_created_at_idx
+      ON notifications(created_at);
+    `);
+
+    // -------------------------------------------------
     // PAYMENTS TABLE
     // -------------------------------------------------
 
@@ -144,15 +198,19 @@ async function setupDatabase() {
 
         amount DECIMAL(12, 2) NOT NULL,
 
-        currency VARCHAR(3) NOT NULL DEFAULT 'NGN',
+        currency VARCHAR(3)
+          NOT NULL DEFAULT 'NGN',
 
-        status VARCHAR(30) NOT NULL DEFAULT 'pending',
+        status VARCHAR(30)
+          NOT NULL DEFAULT 'pending',
 
         payment_method VARCHAR(50),
 
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        created_at TIMESTAMP
+          DEFAULT CURRENT_TIMESTAMP,
 
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        updated_at TIMESTAMP
+          DEFAULT CURRENT_TIMESTAMP
       );
     `);
 
@@ -176,6 +234,12 @@ async function setupDatabase() {
       CREATE INDEX IF NOT EXISTS
       payments_reference_idx
       ON payments(reference);
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS
+      payments_status_idx
+      ON payments(status);
     `);
 
     console.log(
