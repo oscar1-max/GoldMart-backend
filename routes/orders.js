@@ -17,8 +17,6 @@ function normalizeCurrency(currency) {
 
 // =====================================================
 // DELIVERY FEE
-// GoldMart checkout currently uses FREE delivery.
-// Keep this consistent with checkout.
 // =====================================================
 
 function getDeliveryFee() {
@@ -54,8 +52,7 @@ router.post(
       // =================================================
       // FIND VERIFIED PAYMENT
       // =================================================
-
-      const paymentResult =
+    const paymentResult =
         await client.query(
           `
           SELECT *
@@ -120,8 +117,7 @@ router.post(
       // =================================================
       // FIND USER CART
       // =================================================
-
-      const cartResult =
+    const cartResult =
         await client.query(
           `
           SELECT id
@@ -221,7 +217,7 @@ router.post(
         currencies[0];
 
       // =================================================
-      // SUPPORTED GOLDMART CURRENCIES
+      // SUPPORTED CURRENCIES
       // =================================================
 
       const supportedCurrencies = [
@@ -273,8 +269,7 @@ router.post(
             message:
               "Invalid cart item",
           });
-        }
-
+    }
         if (stock < quantity) {
           await client.query("ROLLBACK");
 
@@ -301,13 +296,7 @@ router.post(
         deliveryFee;
 
       // =================================================
-      // PAYMENT IS ALWAYS NGN IN PAYSTACK
-      //
-      // USD PRODUCT:
-      // $100 × 1500 = ₦150,000
-      //
-      // NGN PRODUCT:
-      // ₦10,000 = ₦10,000
+      // PAYMENT AMOUNT
       // =================================================
 
       const paymentAmountNGN =
@@ -448,8 +437,7 @@ router.post(
       // =================================================
       // CONNECT PAYMENT TO ORDER
       // =================================================
-
-      await client.query(
+         await client.query(
         `
         UPDATE payments
         SET
@@ -462,6 +450,85 @@ router.post(
           payment.id,
         ]
       );
+
+      // =================================================
+      // CREATE BUYER NOTIFICATION
+      // =================================================
+
+      await client.query(
+        `
+        INSERT INTO notifications (
+          user_id,
+          title,
+          message,
+          type,
+          is_read
+        )
+        VALUES (
+          $1,
+          $2,
+          $3,
+          $4,
+          FALSE
+        )
+        `,
+        [
+          req.user.id,
+          "Order placed successfully",
+          `Your GoldMart order #${order.id} has been placed successfully and is now being processed.`,
+          "order",
+        ]
+      );
+
+      // =================================================
+      // CREATE SELLER NOTIFICATIONS
+      // =================================================
+
+      const sellerIds = [
+        ...new Set(
+          cartItemsResult.rows
+            .map(
+              (item) =>
+                Number(item.seller_id)
+            )
+            .filter(
+              (sellerId) =>
+                Number.isInteger(
+                  sellerId
+                ) &&
+                sellerId > 0
+            )
+        ),
+      ];
+
+      for (
+        const sellerId of sellerIds
+      ) {
+        await client.query(
+          `
+          INSERT INTO notifications (
+            user_id,
+            title,
+            message,
+            type,
+            is_read
+          )
+          VALUES (
+            $1,
+            $2,
+            $3,
+            $4,
+            FALSE
+          )
+          `,
+          [
+            sellerId,
+            "New order received",
+            `You have received a new GoldMart order #${order.id}. Please review and process the order.`,
+            "seller",
+          ]
+        );
+      }
 
       // =================================================
       // DELETE CART ITEMS
@@ -730,7 +797,6 @@ router.get(
 // =====================================================
 // UPDATE SELLER ORDER STATUS
 // =====================================================
-
 router.put(
   "/seller/:orderId/status",
   protect,
@@ -822,6 +888,35 @@ router.put(
             orderId,
           ]
         );
+
+      // =================================================
+      // NOTIFY BUYER ABOUT STATUS CHANGE
+      // =================================================
+
+      await pool.query(
+        `
+        INSERT INTO notifications (
+          user_id,
+          title,
+          message,
+          type,
+          is_read
+        )
+        VALUES (
+          $1,
+          $2,
+          $3,
+          $4,
+          FALSE
+        )
+        `,
+        [
+          updatedOrder.rows[0].user_id,
+          "Order status updated",
+          `Your GoldMart order #${orderId} is now "${status}".`,
+          "order",
+        ]
+      );
 
       return res.json({
         success: true,
