@@ -9,10 +9,14 @@ router.get("/", async (req, res) => {
     const result = await pool.query(`
       SELECT
         products.*,
-        categories.name AS category_name
+        categories.name AS category_name,
+        products.seller_id,
+        users.name AS seller_name
       FROM products
       LEFT JOIN categories
         ON products.category_id = categories.id
+      LEFT JOIN users
+        ON products.seller_id = users.id
       ORDER BY products.id DESC
     `);
 
@@ -39,10 +43,14 @@ router.get("/:id", async (req, res) => {
       `
       SELECT
         products.*,
-        categories.name AS category_name
+        categories.name AS category_name,
+        products.seller_id,
+        users.name AS seller_name
       FROM products
       LEFT JOIN categories
         ON products.category_id = categories.id
+      LEFT JOIN users
+        ON products.seller_id = users.id
       WHERE products.id = $1
       `,
       [id]
