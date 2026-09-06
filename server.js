@@ -3,6 +3,7 @@ const cors = require("cors");
 require("dotenv").config();
 
 const routes = require("./routes");
+const reportsRoutes = require("./routes/reports");
 const testDatabaseConnection = require("./database");
 const pool = require("./db");
 
@@ -242,6 +243,85 @@ async function setupDatabase() {
       ON payments(status);
     `);
 
+    // -------------------------------------------------
+    // REPORTS / BANNING TABLE
+    // -------------------------------------------------
+
+    await pool.query(`
+      ALTER TABLE users
+      ADD COLUMN IF NOT EXISTS
+      is_banned BOOLEAN NOT NULL DEFAULT FALSE;
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS
+      users_is_banned_idx
+      ON users(is_banned);
+    `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS reports (
+        id SERIAL PRIMARY KEY,
+
+        reporter_id INTEGER NOT NULL
+          REFERENCES users(id)
+          ON DELETE CASCADE,
+
+        reported_user_id INTEGER NOT NULL
+          REFERENCES users(id)
+          ON DELETE CASCADE,
+
+        reason VARCHAR(100) NOT NULL,
+
+        message TEXT,
+
+        status VARCHAR(30) NOT NULL
+          DEFAULT 'pending'
+          CHECK (
+            status IN (
+              'pending',
+              'reviewed',
+              'resolved',
+              'dismissed'
+            )
+          ),
+
+        admin_message TEXT,
+
+        created_at TIMESTAMP
+          DEFAULT CURRENT_TIMESTAMP,
+
+        updated_at TIMESTAMP
+          DEFAULT CURRENT_TIMESTAMP,
+
+        CHECK (reporter_id <> reported_user_id)
+      );
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS
+      reports_reporter_id_idx
+      ON reports(reporter_id);
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS
+      reports_reported_user_id_idx
+      ON reports(reported_user_id);
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS
+      reports_status_idx
+      ON reports(status);
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS
+      reports_created_at_idx
+      ON reports(created_at);
+    `);
+
     console.log(
       "Database setup completed successfully"
     );
@@ -258,6 +338,12 @@ async function setupDatabase() {
 // =====================================================
 
 app.use("/api", routes);
+
+// =====================================================
+// REPORTS / ADMIN ROUTES
+// =====================================================
+
+app.use("/api/reports", reportsRoutes);
 
 // =====================================================
 // HOME
