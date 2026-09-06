@@ -4,6 +4,7 @@ require("dotenv").config();
 
 const routes = require("./routes");
 const reportsRoutes = require("./routes/reports");
+const wishlistRoutes = require("./routes/wishlist");
 const testDatabaseConnection = require("./database");
 const pool = require("./db");
 
@@ -244,7 +245,7 @@ async function setupDatabase() {
     `);
 
     // -------------------------------------------------
-    // REPORTS / BANNING TABLE
+    // REPORTS / BANNING
     // -------------------------------------------------
 
     await pool.query(`
@@ -322,6 +323,51 @@ async function setupDatabase() {
       ON reports(created_at);
     `);
 
+    // -------------------------------------------------
+    // WISHLIST TABLE
+    // -------------------------------------------------
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS wishlist_items (
+        id SERIAL PRIMARY KEY,
+
+        user_id INTEGER NOT NULL
+          REFERENCES users(id)
+          ON DELETE CASCADE,
+
+        product_id INTEGER NOT NULL
+          REFERENCES products(id)
+          ON DELETE CASCADE,
+
+        created_at TIMESTAMP NOT NULL
+          DEFAULT CURRENT_TIMESTAMP,
+
+        UNIQUE (user_id, product_id)
+      );
+    `);
+
+    // -------------------------------------------------
+    // WISHLIST INDEXES
+    // -------------------------------------------------
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS
+      wishlist_items_user_id_idx
+      ON wishlist_items(user_id);
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS
+      wishlist_items_product_id_idx
+      ON wishlist_items(product_id);
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS
+      wishlist_items_created_at_idx
+      ON wishlist_items(created_at);
+    `);
+
     console.log(
       "Database setup completed successfully"
     );
@@ -344,6 +390,12 @@ app.use("/api", routes);
 // =====================================================
 
 app.use("/api/reports", reportsRoutes);
+
+// =====================================================
+// WISHLIST ROUTES
+// =====================================================
+
+app.use("/api/wishlist", wishlistRoutes);
 
 // =====================================================
 // HOME
