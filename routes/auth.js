@@ -20,6 +20,28 @@ const generateToken = (user) => {
 };
 
 // ===============================
+// GET AUTHENTICATED USER
+// ===============================
+const getAuthenticatedUser = (req) => {
+  const authHeader = req.headers.authorization;
+
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return null;
+  }
+
+  const token = authHeader.split(" ")[1];
+
+  try {
+    return jwt.verify(
+      token,
+      process.env.JWT_SECRET
+    );
+  } catch {
+    return null;
+  }
+};
+
+// ===============================
 // REGISTER
 // ===============================
 router.post("/register", async (req, res) => {
@@ -34,14 +56,16 @@ router.post("/register", async (req, res) => {
     if (!name || !email || !password) {
       return res.status(400).json({
         success: false,
-        message: "Name, email and password are required",
+        message:
+          "Name, email and password are required",
       });
     }
 
     if (password.length < 6) {
       return res.status(400).json({
         success: false,
-        message: "Password must be at least 6 characters",
+        message:
+          "Password must be at least 6 characters",
       });
     }
 
@@ -52,7 +76,8 @@ router.post("/register", async (req, res) => {
       });
     }
 
-    const normalizedEmail = email.trim().toLowerCase();
+    const normalizedEmail =
+      email.trim().toLowerCase();
 
     const existingUser = await pool.query(
       "SELECT id FROM users WHERE email = $1",
@@ -62,11 +87,13 @@ router.post("/register", async (req, res) => {
     if (existingUser.rows.length > 0) {
       return res.status(409).json({
         success: false,
-        message: "An account with this email already exists",
+        message:
+          "An account with this email already exists",
       });
     }
 
-    const hashedPassword = await bcrypt.hash(password, 12);
+    const hashedPassword =
+      await bcrypt.hash(password, 12);
 
     const result = await pool.query(
       `
@@ -74,7 +101,12 @@ router.post("/register", async (req, res) => {
         (name, email, password, role)
       VALUES
         ($1, $2, $3, $4)
-      RETURNING id, name, email, role, created_at
+      RETURNING
+        id,
+        name,
+        email,
+        role,
+        created_at
       `,
       [
         name.trim(),
@@ -113,11 +145,13 @@ router.post("/login", async (req, res) => {
     if (!email || !password) {
       return res.status(400).json({
         success: false,
-        message: "Email and password are required",
+        message:
+          "Email and password are required",
       });
     }
 
-    const normalizedEmail = email.trim().toLowerCase();
+    const normalizedEmail =
+      email.trim().toLowerCase();
 
     const result = await pool.query(
       "SELECT * FROM users WHERE email = $1",
@@ -133,10 +167,11 @@ router.post("/login", async (req, res) => {
 
     const user = result.rows[0];
 
-    const passwordMatch = await bcrypt.compare(
-      password,
-      user.password
-    );
+    const passwordMatch =
+      await bcrypt.compare(
+        password,
+        user.password
+      );
 
     if (!passwordMatch) {
       return res.status(401).json({
@@ -172,16 +207,114 @@ router.post("/login", async (req, res) => {
 });
 
 // ===============================
-// BECOME A SELLER
+// SWITCH BUYER / SELLER
 // ===============================
-router.post("/become-seller", async (req, res) => {
+router.post("/switch-role", async (req, res) => {
   try {
-    const { userId } = req.body;
+    const authenticatedUser =
+      getAuthenticatedUser(req);
 
-    if (!userId) {
+    if (!authenticatedUser) {
+      return res.status(401).json({
+        success: false,
+        message: "Authentication required",
+      });
+    }
+
+    const currentRole =
+      authenticatedUser.role;
+
+    if (
+      currentRole !== "customer" &&
+      currentRole !== "seller"
+    ) {
       return res.status(400).json({
         success: false,
-        message: "User ID is required",
+        message: "Invalid current account type",
+      });
+    }
+
+    const newRole =
+      currentRole === "customer"
+        ? "seller"
+        : "customer";
+
+    const result = await pool.query(
+      `
+      UPDATE users
+      SET role = $1
+      WHERE id = $2
+      RETURNING
+        id,
+        name,
+        email,
+        role,
+        created_at
+      `,
+      [
+        newRole,
+        authenticatedUser.id,
+      ]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "User account not found",
+      });
+    }
+
+    const user = result.rows[0];
+
+    const token = generateToken(user);
+
+    res.json({
+      success: true,
+      message:
+        newRole === "seller"
+          ? "Switched to seller mode"
+          : "Switched to buyer mode",
+      user,
+      token,
+    });
+  } catch (error) {
+    console.error(
+      "Switch role error:",
+      error
+    );
+
+    res.status(500).json({
+      success: false,
+      message: "Failed to switch account type",
+    });
+  }
+});
+
+// ===============================
+// BECOME A SELLER
+// ===============================
+// Kept for compatibility with existing frontend.
+// Now requires authentication and can only
+// convert the currently logged-in customer.
+router.post("/become-seller", async (req, res) => {
+  try {
+    const authenticatedUser =
+      getAuthenticatedUser(req);
+
+    if (!authenticatedUser) {
+      return res.status(401).json({
+        success: false,
+        message: "Authentication required",
+      });
+    }
+
+    if (
+      authenticatedUser.role === "seller"
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Account is already a seller",
       });
     }
 
@@ -191,16 +324,21 @@ router.post("/become-seller", async (req, res) => {
       SET role = 'seller'
       WHERE id = $1
         AND role = 'customer'
-      RETURNING id, name, email, role, created_at
+      RETURNING
+        id,
+        name,
+        email,
+        role,
+        created_at
       `,
-      [userId]
+      [authenticatedUser.id]
     );
 
     if (result.rows.length === 0) {
       return res.status(400).json({
         success: false,
         message:
-          "Account is already a seller or could not be updated",
+          "Account could not be converted to seller",
       });
     }
 
@@ -209,16 +347,21 @@ router.post("/become-seller", async (req, res) => {
 
     res.json({
       success: true,
-      message: "Your account is now a seller account",
+      message:
+        "Your account is now a seller account",
       user,
       token,
     });
   } catch (error) {
-    console.error("Become seller error:", error);
+    console.error(
+      "Become seller error:",
+      error
+    );
 
     res.status(500).json({
       success: false,
-      message: "Failed to convert account to seller",
+      message:
+        "Failed to convert account to seller",
     });
   }
 });
