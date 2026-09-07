@@ -5,6 +5,8 @@ require("dotenv").config();
 const routes = require("./routes");
 const reportsRoutes = require("./routes/reports");
 const wishlistRoutes = require("./routes/wishlist");
+const messagesRoutes = require("./routes/messages");
+
 const testDatabaseConnection = require("./database");
 const pool = require("./db");
 
@@ -85,19 +87,15 @@ async function setupDatabase() {
 
         review TEXT,
 
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
     `);
 
     // -------------------------------------------------
-    // SELLER REVIEWS CONSTRAINT
+    // SELLER REVIEW UNIQUE CONSTRAINT
     // -------------------------------------------------
-
-    await pool.query(`
-      ALTER TABLE seller_reviews
-      DROP CONSTRAINT IF EXISTS
-      seller_reviews_buyer_id_order_id_key;
-    `);
 
     await pool.query(`
       CREATE UNIQUE INDEX IF NOT EXISTS
@@ -299,6 +297,10 @@ async function setupDatabase() {
       );
     `);
 
+    // -------------------------------------------------
+    // REPORT INDEXES
+    // -------------------------------------------------
+
     await pool.query(`
       CREATE INDEX IF NOT EXISTS
       reports_reporter_id_idx
@@ -368,6 +370,120 @@ async function setupDatabase() {
       ON wishlist_items(created_at);
     `);
 
+    // =================================================
+    // CHAT / MESSAGES
+    // =================================================
+
+    // -------------------------------------------------
+    // CONVERSATIONS TABLE
+    // -------------------------------------------------
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS conversations (
+        id SERIAL PRIMARY KEY,
+
+        buyer_id INTEGER NOT NULL
+          REFERENCES users(id)
+          ON DELETE CASCADE,
+
+        seller_id INTEGER NOT NULL
+          REFERENCES users(id)
+          ON DELETE CASCADE,
+
+        product_id INTEGER
+          REFERENCES products(id)
+          ON DELETE SET NULL,
+
+        created_at TIMESTAMP NOT NULL
+          DEFAULT CURRENT_TIMESTAMP,
+
+        updated_at TIMESTAMP NOT NULL
+          DEFAULT CURRENT_TIMESTAMP,
+
+        UNIQUE (
+          buyer_id,
+          seller_id,
+          product_id
+        ),
+
+        CHECK (buyer_id <> seller_id)
+      );
+    `);
+
+    // -------------------------------------------------
+    // CONVERSATION INDEXES
+    // -------------------------------------------------
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS
+      conversations_buyer_id_idx
+      ON conversations(buyer_id);
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS
+      conversations_seller_id_idx
+      ON conversations(seller_id);
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS
+      conversations_updated_at_idx
+      ON conversations(updated_at);
+    `);
+
+    // -------------------------------------------------
+    // MESSAGES TABLE
+    // -------------------------------------------------
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS messages (
+        id SERIAL PRIMARY KEY,
+
+        conversation_id INTEGER NOT NULL
+          REFERENCES conversations(id)
+          ON DELETE CASCADE,
+
+        sender_id INTEGER NOT NULL
+          REFERENCES users(id)
+          ON DELETE CASCADE,
+
+        message TEXT NOT NULL,
+
+        is_read BOOLEAN NOT NULL
+          DEFAULT FALSE,
+
+        created_at TIMESTAMP NOT NULL
+          DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    // -------------------------------------------------
+    // MESSAGE INDEXES
+    // -------------------------------------------------
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS
+      messages_conversation_id_idx
+      ON messages(conversation_id);
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS
+      messages_sender_id_idx
+      ON messages(sender_id);
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS
+      messages_created_at_idx
+      ON messages(created_at);
+    `);
+
+    // -------------------------------------------------
+    // FINAL MESSAGE
+    // -------------------------------------------------
+
     console.log(
       "Database setup completed successfully"
     );
@@ -383,19 +499,35 @@ async function setupDatabase() {
 // API ROUTES
 // =====================================================
 
+// Main GoldMart API routes
 app.use("/api", routes);
 
 // =====================================================
 // REPORTS / ADMIN ROUTES
 // =====================================================
 
-app.use("/api/reports", reportsRoutes);
+app.use(
+  "/api/reports",
+  reportsRoutes
+);
 
 // =====================================================
 // WISHLIST ROUTES
 // =====================================================
 
-app.use("/api/wishlist", wishlistRoutes);
+app.use(
+  "/api/wishlist",
+  wishlistRoutes
+);
+
+// =====================================================
+// CHAT / MESSAGES ROUTES
+// =====================================================
+
+app.use(
+  "/api/messages",
+  messagesRoutes
+);
 
 // =====================================================
 // HOME
@@ -435,17 +567,19 @@ app.use((req, res) => {
 // ERROR HANDLER
 // =====================================================
 
-app.use((error, req, res, next) => {
-  console.error(
-    "Unhandled server error:",
-    error
-  );
+app.use(
+  (error, req, res, next) => {
+    console.error(
+      "Unhandled server error:",
+      error
+    );
 
-  res.status(500).json({
-    success: false,
-    message: "Internal server error",
-  });
-});
+    res.status(500).json({
+      success: false,
+      message: "Internal server error",
+    });
+  }
+);
 
 // =====================================================
 // START SERVER
