@@ -1,40 +1,22 @@
 const express = require("express");
-const pool = require("../db");
-const jwt = require("jsonwebtoken");
-const { protect } = require("../middleware/auth");
-
 const router = express.Router();
 
-function getUserId(req) {
-  const auth = req.headers.authorization || "";
-
-  if (!auth.startsWith("Bearer ")) {
-    return null;
-  }
-
-  try {
-    const token = auth.split(" ")[1];
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    return Number(decoded.id || decoded.userId || decoded.user_id);
-  } catch {
-    return null;
-  }
-}
+const pool = require("../db");
+const { protect } = require("../middleware/auth");
 
 /*
   GET /api/messages/conversations
 
-  Gets only conversations belonging to the
-  currently logged-in buyer or seller.
+  Gets all conversations belonging to the logged-in user.
 */
 router.get("/conversations", protect, async (req, res) => {
   try {
-    const userId = getUserId(req);
+    const userId = Number(req.user.id);
 
     if (!userId) {
       return res.status(401).json({
         success: false,
-        message: "Unauthorized",
+        message: "Authentication required",
       });
     }
 
@@ -48,25 +30,31 @@ router.get("/conversations", protect, async (req, res) => {
         c.created_at,
         c.updated_at,
 
-        buyer.name AS buyer_name,
-        seller.name AS seller_name,
+        CASE
+          WHEN c.buyer_id = $1 THEN seller.name
+          ELSE buyer.name
+        END AS other_user_name,
+
+        CASE
+          WHEN c.buyer_id = $1 THEN c.seller_id
+          ELSE c.buyer_id
+        END AS other_user_id,
 
         p.name AS product_name,
+        p.image_url AS product_image,
 
-        (
-          SELECT m.message
-          FROM messages m
-          WHERE m.conversation_id = c.id
-          ORDER BY m.created_at DESC
-          LIMIT 1
-        ) AS last_message,
+        lm.message AS last_message,
+        lm.created_at AS last_message_at,
 
-        (
-          SELECT COUNT(*)
-          FROM messages m
-          WHERE m.conversation_id = c.id
-            AND m.sender_id <> $1
-            AND m.is_read = FALSE
+        COALESCE(
+          (
+            SELECT COUNT(*)
+            FROM messages m2
+            WHERE m2.conversation_id = c.id
+              AND m2.sender_id <> $1
+              AND m2.is_read = FALSE
+          ),
+          0
         ) AS unread_count
 
       FROM conversations c
@@ -80,6 +68,16 @@ router.get("/conversations", protect, async (req, res) => {
       LEFT JOIN products p
         ON p.id = c.product_id
 
+      LEFT JOIN LATERAL (
+        SELECT
+          m.message,
+          m.created_at
+        FROM messages m
+        WHERE m.conversation_id = c.id
+        ORDER BY m.created_at DESC
+        LIMIT 1
+      ) lm ON TRUE
+
       WHERE c.buyer_id = $1
          OR c.seller_id = $1
 
@@ -88,14 +86,14 @@ router.get("/conversations", protect, async (req, res) => {
       [userId]
     );
 
-    res.json({
+    return res.json({
       success: true,
       conversations: result.rows,
     });
   } catch (error) {
-    console.error("Get conversations error:", error);
+    console.error("GET conversations error:", error);
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: "Failed to load conversations",
     });
@@ -106,29 +104,44 @@ router.get("/conversations", protect, async (req, res) => {
 /*
   POST /api/messages/conversations
 
-  Creates or finds a conversation between
-  the logged-in buyer and a seller.
+  Creates a buyer -> seller conversation.
 */
 router.post("/conversations", protect, async (req, res) => {
   try {
-    const userId = getUserId(req);
-    const { sellerId, productId } = req.body;
+    const buyerId = Number(req.user.id);
+    const sellerId = Number(req.body.sellerId);
+    const productId =
+      req.body.productId === null ||
+      req.body.productId === undefined ||
+      req.body.productId === ""
+        ? null
+        : Number(req.body.productId);
 
-    if (!userId) {
+    if (!buyerId) {
       return res.status(401).json({
         success: false,
-        message: "Unauthorized",
+        message: "Authentication required",
       });
     }
 
-    if (!sellerId) {
+    if (!sellerId || Number.isNaN(sellerId)) {
       return res.status(400).json({
         success: false,
-        message: "sellerId is required",
+        message: "Seller ID is required",
       });
     }
 
-    const sellerResult = await pool.query(
+    if (buyerId === sellerId) {
+      return res.status(400).json({
+        success: false,
+        message: "You cannot chat with yourself",
+      });
+    }
+
+    /*
+      Make sure the target user really is a seller.
+    */
+    const sellerCheck = await pool.query(
       `
       SELECT id, name, role
       FROM users
@@ -137,351 +150,121 @@ router.post("/conversations", protect, async (req, res) => {
       [sellerId]
     );
 
-    if (sellerResult.rows.length === 0) {
+    if (sellerCheck.rows.length === 0) {
       return res.status(404).json({
         success: false,
         message: "Seller not found",
       });
     }
 
-    const seller = sellerResult.rows[0];
-
-    if (seller.role !== "seller") {
+    if (sellerCheck.rows[0].role !== "seller") {
       return res.status(400).json({
         success: false,
         message: "Selected user is not a seller",
       });
     }
 
-    if (Number(userId) === Number(sellerId)) {
-      return res.status(400).json({
-        success: false,
-        message: "You cannot chat with yourself",
-      });
-    }
-
-    let conversation;
-
-    if (productId) {
-      const existing = await pool.query(
+    /*
+      If a product ID was supplied, make sure the product exists.
+    */
+    if (productId !== null) {
+      const productCheck = await pool.query(
         `
-        SELECT *
-        FROM conversations
-        WHERE buyer_id = $1
-          AND seller_id = $2
-          AND product_id = $3
-        LIMIT 1
+        SELECT id
+        FROM products
+        WHERE id = $1
         `,
-        [userId, sellerId, productId]
+        [productId]
       );
 
-      if (existing.rows.length > 0) {
-        conversation = existing.rows[0];
-      } else {
-        const created = await pool.query(
-          `
-          INSERT INTO conversations
-            (buyer_id, seller_id, product_id)
-          VALUES
-            ($1, $2, $3)
-          RETURNING *
-          `,
-          [userId, sellerId, productId]
-        );
-
-        conversation = created.rows[0];
+      if (productCheck.rows.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "Product not found",
+        });
       }
-    } else {
-      const existing = await pool.query(
+    }
+
+    /*
+      Find an existing conversation first.
+
+      We handle NULL product_id separately because PostgreSQL
+      allows multiple NULL values in a normal UNIQUE constraint.
+    */
+    let existing;
+
+    if (productId === null) {
+      existing = await pool.query(
         `
-        SELECT *
+        SELECT id
         FROM conversations
         WHERE buyer_id = $1
           AND seller_id = $2
           AND product_id IS NULL
         LIMIT 1
         `,
-        [userId, sellerId]
+        [buyerId, sellerId]
       );
-
-      if (existing.rows.length > 0) {
-        conversation = existing.rows[0];
-      } else {
-        const created = await pool.query(
-          `
-          INSERT INTO conversations
-            (buyer_id, seller_id, product_id)
-          VALUES
-            ($1, $2, NULL)
-          RETURNING *
-          `,
-          [userId, sellerId]
-        );
-
-        conversation = created.rows[0];
-      }
+    } else {
+      existing = await pool.query(
+        `
+        SELECT id
+        FROM conversations
+        WHERE buyer_id = $1
+          AND seller_id = $2
+          AND product_id = $3
+        LIMIT 1
+        `,
+        [buyerId, sellerId, productId]
+      );
     }
 
-    res.json({
+    if (existing.rows.length > 0) {
+      return res.json({
+        success: true,
+        conversation: {
+          id: existing.rows[0].id,
+        },
+        existing: true,
+      });
+    }
+
+    /*
+      Create a new conversation.
+    */
+    const created = await pool.query(
+      `
+      INSERT INTO conversations (
+        buyer_id,
+        seller_id,
+        product_id
+      )
+      VALUES ($1, $2, $3)
+      RETURNING
+        id,
+        buyer_id,
+        seller_id,
+        product_id,
+        created_at,
+        updated_at
+      `,
+      [buyerId, sellerId, productId]
+    );
+
+    return res.status(201).json({
       success: true,
-      conversation,
+      conversation: created.rows[0],
+      existing: false,
     });
   } catch (error) {
-    console.error("Create conversation error:", error);
+    console.error("POST conversation error:", error);
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: "Failed to create conversation",
     });
   }
 });
-
-
-/*
-  GET /api/messages/conversations/:conversationId
-
-  Gets messages only if the logged-in user
-  belongs to the conversation.
-*/
-router.get(
-  "/conversations/:conversationId",
-  protect,
-  async (req, res) => {
-    try {
-      const userId = getUserId(req);
-      const conversationId = Number(req.params.conversationId);
-
-      if (!userId) {
-        return res.status(401).json({
-          success: false,
-          message: "Unauthorized",
-        });
-      }
-
-      if (!Number.isInteger(conversationId)) {
-        return res.status(400).json({
-          success: false,
-          message: "Invalid conversation ID",
-        });
-      }
-
-      const conversationResult = await pool.query(
-        `
-        SELECT
-          c.*,
-          buyer.name AS buyer_name,
-          seller.name AS seller_name,
-          p.name AS product_name
-        FROM conversations c
-        JOIN users buyer
-          ON buyer.id = c.buyer_id
-        JOIN users seller
-          ON seller.id = c.seller_id
-        LEFT JOIN products p
-          ON p.id = c.product_id
-        WHERE c.id = $1
-          AND (
-            c.buyer_id = $2
-            OR c.seller_id = $2
-          )
-        `,
-        [conversationId, userId]
-      );
-
-      if (conversationResult.rows.length === 0) {
-        return res.status(404).json({
-          success: false,
-          message: "Conversation not found",
-        });
-      }
-
-      const conversation = conversationResult.rows[0];
-
-      const messagesResult = await pool.query(
-        `
-        SELECT
-          m.id,
-          m.conversation_id,
-          m.sender_id,
-          m.message,
-          m.is_read,
-          m.created_at,
-          u.name AS sender_name
-        FROM messages m
-        JOIN users u
-          ON u.id = m.sender_id
-        WHERE m.conversation_id = $1
-        ORDER BY m.created_at ASC
-        `,
-        [conversationId]
-      );
-
-      // Mark messages sent by the other person as read.
-      await pool.query(
-        `
-        UPDATE messages
-        SET is_read = TRUE
-        WHERE conversation_id = $1
-          AND sender_id <> $2
-          AND is_read = FALSE
-        `,
-        [conversationId, userId]
-      );
-
-      res.json({
-        success: true,
-        conversation,
-        messages: messagesResult.rows,
-      });
-    } catch (error) {
-      console.error("Get messages error:", error);
-
-      res.status(500).json({
-        success: false,
-        message: "Failed to load messages",
-      });
-    }
-  }
-);
-
-
-/*
-  POST /api/messages/conversations/:conversationId
-
-  Sends a message.
-*/
-router.post(
-  "/conversations/:conversationId",
-  protect,
-  async (req, res) => {
-    try {
-      const userId = getUserId(req);
-      const conversationId = Number(req.params.conversationId);
-      const message = String(req.body.message || "").trim();
-
-      if (!userId) {
-        return res.status(401).json({
-          success: false,
-          message: "Unauthorized",
-        });
-      }
-
-      if (!Number.isInteger(conversationId)) {
-        return res.status(400).json({
-          success: false,
-          message: "Invalid conversation ID",
-        });
-      }
-
-      if (!message) {
-        return res.status(400).json({
-          success: false,
-          message: "Message cannot be empty",
-        });
-      }
-
-      if (message.length > 2000) {
-        return res.status(400).json({
-          success: false,
-          message: "Message is too long",
-        });
-      }
-
-      const conversationResult = await pool.query(
-        `
-        SELECT
-          c.*,
-          buyer.name AS buyer_name,
-          seller.name AS seller_name
-        FROM conversations c
-        JOIN users buyer
-          ON buyer.id = c.buyer_id
-        JOIN users seller
-          ON seller.id = c.seller_id
-        WHERE c.id = $1
-          AND (
-            c.buyer_id = $2
-            OR c.seller_id = $2
-          )
-        `,
-        [conversationId, userId]
-      );
-
-      if (conversationResult.rows.length === 0) {
-        return res.status(404).json({
-          success: false,
-          message: "Conversation not found",
-        });
-      }
-
-      const conversation = conversationResult.rows[0];
-
-      const senderResult = await pool.query(
-        `
-        SELECT id, name, role
-        FROM users
-        WHERE id = $1
-        `,
-        [userId]
-      );
-
-      const sender = senderResult.rows[0];
-
-      const recipientId =
-        Number(conversation.buyer_id) === Number(userId)
-          ? conversation.seller_id
-          : conversation.buyer_id;
-
-      const messageResult = await pool.query(
-        `
-        INSERT INTO messages
-          (conversation_id, sender_id, message)
-        VALUES
-          ($1, $2, $3)
-        RETURNING *
-        `,
-        [conversationId, userId, message]
-      );
-
-      await pool.query(
-        `
-        UPDATE conversations
-        SET updated_at = CURRENT_TIMESTAMP
-        WHERE id = $1
-        `,
-        [conversationId]
-      );
-
-      // Private notification: only the recipient gets this notification.
-      await pool.query(
-        `
-        INSERT INTO notifications
-          (user_id, title, message, type)
-        VALUES
-          ($1, $2, $3, $4)
-        `,
-        [
-          recipientId,
-          "New Message",
-          `${sender.name} sent you a new message.`,
-          "message",
-        ]
-      );
-
-      res.status(201).json({
-        success: true,
-        message: messageResult.rows[0],
-      });
-    } catch (error) {
-      console.error("Send message error:", error);
-
-      res.status(500).json({
-        success: false,
-        message: "Failed to send message",
-      });
-    }
-  }
-);
 
 
 module.exports = router;
