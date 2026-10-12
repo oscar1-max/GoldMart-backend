@@ -4,1026 +4,425 @@ const { protect } = require("../middleware/auth");
 
 const router = express.Router();
 
-const USD_TO_NGN_RATE =
-  Number(process.env.USD_TO_NGN_RATE) || 1500;
-
-// =====================================================
-// NORMALIZE CURRENCY
-// =====================================================
-
-function normalizeCurrency(currency) {
-  return String(currency || "USD").toUpperCase();
-}
-
-// =====================================================
-// DELIVERY FEE
-// =====================================================
-
-function getDeliveryFee() {
-  return 0;
-}
-
 // =====================================================
 // CREATE ORDER AFTER VERIFIED PAYMENT
 // =====================================================
 
-router.post(
-  "/",
-  protect,
-  async (req, res) => {
-    const client = await pool.connect();
+router.post("/", protect, async (req, res) => {
+  const reference = String(
+    req.body?.paymentReference || ""
+  ).trim();
 
-    try {
-      const {
-        paymentReference,
-        delivery = {},
-      } = req.body;
+  if (!reference) {
+    return res.status(400).json({
+      success: false,
+      message: "Payment reference is required.",
+    });
+  }
 
-      if (!paymentReference) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "Payment reference is required",
-        });
-      }
+  const client = await pool.connect();
+  let inTransaction = false;
 
-      await client.query("BEGIN");
+  try {
+    await client.query("BEGIN");
+    inTransaction = true;
 
-      // =================================================
-      // FIND VERIFIED PAYMENT
-      // =================================================
-    const paymentResult =
-        await client.query(
-          `
-          SELECT *
-          FROM payments
-          WHERE reference = $1
-            AND user_id = $2
-            AND status = 'success'
-          FOR UPDATE
-          `,
-          [
-            paymentReference,
-            req.user.id,
-          ]
-        );
+    // Get and lock the payment record.
+    const paymentResult = await client.query(
+      `
+      SELECT
+        id, user_id, order_id, reference,
+        amount, currency, status,
+        checkout_snapshot
+      FROM payments
+      WHERE reference = $1 AND user_id = $2
+      FOR UPDATE
+      `,
+      [reference, req.user.id]
+    );
 
-      if (
-        paymentResult.rows.length === 0
-      ) {
-        await client.query("ROLLBACK");
+    if (!paymentResult.rows.length) {
+      await client.query("ROLLBACK");
+      inTransaction = false;
 
-        return res.status(400).json({
-          success: false,
-          message:
-            "Verified payment not found",
-        });
-      }
-
-      const payment =
-        paymentResult.rows[0];
-
-      // =================================================
-      // PREVENT DUPLICATE ORDERS
-      // =================================================
-
-      if (payment.order_id) {
-        const existingOrder =
-          await client.query(
-            `
-            SELECT
-              id,
-              user_id,
-              total_amount,
-              status,
-              created_at
-            FROM orders
-            WHERE id = $1
-            `,
-            [payment.order_id]
-          );
-
-        await client.query("ROLLBACK");
-
-        return res.json({
-          success: true,
-          message:
-            "Order already exists",
-          order:
-            existingOrder.rows[0],
-        });
-      }
-
-      // =================================================
-      // FIND USER CART
-      // =================================================
-    const cartResult =
-        await client.query(
-          `
-          SELECT id
-          FROM carts
-          WHERE user_id = $1
-          LIMIT 1
-          `,
-          [req.user.id]
-        );
-
-      if (
-        cartResult.rows.length === 0
-      ) {
-        await client.query("ROLLBACK");
-
-        return res.status(400).json({
-          success: false,
-          message:
-            "Your cart is empty",
-        });
-      }
-
-      const cartId =
-        cartResult.rows[0].id;
-
-      // =================================================
-      // GET CART ITEMS
-      // =================================================
-
-      const cartItemsResult =
-        await client.query(
-          `
-          SELECT
-            cart_items.id,
-            cart_items.product_id,
-            cart_items.quantity,
-
-            products.name,
-            products.price,
-            products.currency,
-            products.stock,
-            products.seller_id,
-            products.image_url
-
-          FROM cart_items
-
-          INNER JOIN products
-            ON cart_items.product_id =
-               products.id
-
-          WHERE cart_items.cart_id = $1
-
-          FOR UPDATE OF products
-          `,
-          [cartId]
-        );
-
-      if (
-        cartItemsResult.rows.length === 0
-      ) {
-        await client.query("ROLLBACK");
-
-        return res.status(400).json({
-          success: false,
-          message:
-            "Your cart is empty",
-        });
-      }
-
-      // =================================================
-      // CHECK CART CURRENCIES
-      // =================================================
-
-      const currencies =
-        Array.from(
-          new Set(
-            cartItemsResult.rows.map(
-              (item) =>
-                normalizeCurrency(
-                  item.currency
-                )
-            )
-          )
-        );
-
-      if (currencies.length !== 1) {
-        await client.query("ROLLBACK");
-
-        return res.status(400).json({
-          success: false,
-          message:
-            "Cart contains products with different currencies.",
-        });
-      }
-
-      const orderCurrency =
-        currencies[0];
-
-      // =================================================
-      // SUPPORTED CURRENCIES
-      // =================================================
-
-      const supportedCurrencies = [
-        "USD",
-        "NGN",
-      ];
-
-      if (
-        !supportedCurrencies.includes(
-          orderCurrency
-        )
-      ) {
-        await client.query("ROLLBACK");
-
-        return res.status(400).json({
-          success: false,
-          message:
-            `GoldMart currently supports USD and NGN checkout. Product currency ${orderCurrency} is not supported.`,
-        });
-      }
-
-      // =================================================
-      // CALCULATE ORDER TOTAL
-      // =================================================
-
-      let productsTotal = 0;
-
-      for (
-        const item of cartItemsResult.rows
-      ) {
-        const price =
-          Number(item.price);
-
-        const quantity =
-          Number(item.quantity);
-
-        const stock =
-          Number(item.stock);
-
-        if (
-          !Number.isFinite(price) ||
-          !Number.isFinite(quantity) ||
-          quantity <= 0
-        ) {
-          await client.query("ROLLBACK");
-
-          return res.status(400).json({
-            success: false,
-            message:
-              "Invalid cart item",
-          });
+      return res.status(404).json({
+        success: false,
+        message:
+          "Payment was not found for this account.",
+      });
     }
-        if (stock < quantity) {
-          await client.query("ROLLBACK");
 
-          return res.status(400).json({
-            success: false,
-            message:
-              `${item.name} does not have enough stock`,
-          });
-        }
+    const payment = paymentResult.rows[0];
 
-        productsTotal +=
-          price * quantity;
-      }
-
-      // =================================================
-      // DELIVERY
-      // =================================================
-
-      const deliveryFee =
-        getDeliveryFee(orderCurrency);
-
-      const calculatedTotal =
-        productsTotal +
-        deliveryFee;
-
-      // =================================================
-      // PAYMENT AMOUNT
-      // =================================================
-
-      const paymentAmountNGN =
-        Number(payment.amount);
-
-      let expectedPaymentAmountNGN;
-
-      if (orderCurrency === "USD") {
-        expectedPaymentAmountNGN =
-          Math.round(
-            calculatedTotal *
-              USD_TO_NGN_RATE
-          );
-      } else {
-        expectedPaymentAmountNGN =
-          Math.round(
-            calculatedTotal
-          );
-      }
-
-      if (
-        !Number.isFinite(
-          paymentAmountNGN
-        ) ||
-        Math.abs(
-          paymentAmountNGN -
-            expectedPaymentAmountNGN
-        ) > 1
-      ) {
-        await client.query("ROLLBACK");
-
-        return res.status(400).json({
-          success: false,
-          message:
-            "Payment amount does not match the order total.",
-          details: {
-            order_currency:
-              orderCurrency,
-
-            order_total:
-              Number(
-                calculatedTotal.toFixed(2)
-              ),
-
-            expected_payment_ngn:
-              expectedPaymentAmountNGN,
-
-            received_payment_ngn:
-              paymentAmountNGN,
-
-            exchange_rate:
-              USD_TO_NGN_RATE,
-          },
-        });
-      }
-
-      // =================================================
-      // CREATE ORDER
-      // =================================================
-
-      const orderResult =
-        await client.query(
-          `
-          INSERT INTO orders (
-            user_id,
-            total_amount,
-            status
-          )
-          VALUES (
-            $1,
-            $2,
-            $3
-          )
-          RETURNING
-            id,
-            user_id,
-            total_amount,
-            status,
-            created_at
-          `,
-          [
-            req.user.id,
-            calculatedTotal,
-            "processing",
-          ]
-        );
-
-      const order =
-        orderResult.rows[0];
-
-      // =================================================
-      // CREATE ORDER ITEMS
-      // =================================================
-
-      for (
-        const item of cartItemsResult.rows
-      ) {
-        await client.query(
-          `
-          INSERT INTO order_items (
-            order_id,
-            product_id,
-            quantity,
-            price
-          )
-          VALUES (
-            $1,
-            $2,
-            $3,
-            $4
-          )
-          `,
-          [
-            order.id,
-            item.product_id,
-            item.quantity,
-            item.price,
-          ]
-        );
-
-        // =================================================
-        // REDUCE STOCK
-        // =================================================
-
-        await client.query(
-          `
-          UPDATE products
-          SET stock = stock - $1
-          WHERE id = $2
-          `,
-          [
-            item.quantity,
-            item.product_id,
-          ]
-        );
-      }
-
-      // =================================================
-      // CONNECT PAYMENT TO ORDER
-      // =================================================
-         await client.query(
+    // Prevent duplicate orders.
+    if (payment.order_id) {
+      const existing = await client.query(
         `
-        UPDATE payments
-        SET
-          order_id = $1,
-          updated_at = CURRENT_TIMESTAMP
-        WHERE id = $2
+        SELECT
+          id, user_id, total_amount,
+          status, created_at
+        FROM orders
+        WHERE id = $1 AND user_id = $2
         `,
-        [
-          order.id,
-          payment.id,
-        ]
-      );
-
-      // =================================================
-      // CREATE BUYER NOTIFICATION
-      // =================================================
-
-      await client.query(
-        `
-        INSERT INTO notifications (
-          user_id,
-          title,
-          message,
-          type,
-          is_read
-        )
-        VALUES (
-          $1,
-          $2,
-          $3,
-          $4,
-          FALSE
-        )
-        `,
-        [
-          req.user.id,
-          "Order placed successfully",
-          `Your GoldMart order #${order.id} has been placed successfully and is now being processed.`,
-          "order",
-        ]
-      );
-
-      // =================================================
-      // CREATE SELLER NOTIFICATIONS
-      // =================================================
-
-      const sellerIds = [
-        ...new Set(
-          cartItemsResult.rows
-            .map(
-              (item) =>
-                Number(item.seller_id)
-            )
-            .filter(
-              (sellerId) =>
-                Number.isInteger(
-                  sellerId
-                ) &&
-                sellerId > 0
-            )
-        ),
-      ];
-
-      for (
-        const sellerId of sellerIds
-      ) {
-        await client.query(
-          `
-          INSERT INTO notifications (
-            user_id,
-            title,
-            message,
-            type,
-            is_read
-          )
-          VALUES (
-            $1,
-            $2,
-            $3,
-            $4,
-            FALSE
-          )
-          `,
-          [
-            sellerId,
-            "New order received",
-            `You have received a new GoldMart order #${order.id}. Please review and process the order.`,
-            "seller",
-          ]
-        );
-      }
-
-      // =================================================
-      // DELETE CART ITEMS
-      // =================================================
-
-      await client.query(
-        `
-        DELETE FROM cart_items
-        WHERE cart_id = $1
-        `,
-        [cartId]
+        [payment.order_id, req.user.id]
       );
 
       await client.query("COMMIT");
+      inTransaction = false;
 
-      // =================================================
-      // SUCCESS
-      // =================================================
-
-      return res.status(201).json({
-        success: true,
-
-        message:
-          "Payment confirmed and order created successfully",
-
-        order,
-
-        payment: {
-          reference:
-            payment.reference,
-
-          amount:
-            payment.amount,
-
-          currency:
-            payment.currency,
-
-          status:
-            payment.status,
-        },
-
-        delivery,
-
-        order_currency:
-          orderCurrency,
-
-        order_total:
-          calculatedTotal,
-
-        payment_amount_ngn:
-          paymentAmountNGN,
-
-        exchange_rate:
-          USD_TO_NGN_RATE,
-      });
-    } catch (error) {
-      try {
-        await client.query("ROLLBACK");
-      } catch {}
-
-      console.error(
-        "Create order error:",
-        error
-      );
-
-      return res.status(500).json({
-        success: false,
-        message:
-          "Failed to create order",
-      });
-    } finally {
-      client.release();
-    }
-  }
-);
-
-// =====================================================
-// GET LOGGED-IN USER'S ORDERS
-// =====================================================
-
-router.get(
-  "/",
-  protect,
-  async (req, res) => {
-    try {
-      const ordersResult =
-        await pool.query(
-          `
-          SELECT
-            id,
-            total_amount,
-            status,
-            created_at
-          FROM orders
-          WHERE user_id = $1
-          ORDER BY created_at DESC
-          `,
-          [req.user.id]
-        );
-
-      const orders = [];
-
-      for (
-        const order of ordersResult.rows
-      ) {
-        const itemsResult =
-          await pool.query(
-            `
-            SELECT
-              order_items.id,
-              order_items.product_id,
-              order_items.quantity,
-              order_items.price,
-
-              products.name,
-              products.image_url,
-              products.seller_id,
-              products.currency
-
-            FROM order_items
-
-            LEFT JOIN products
-              ON order_items.product_id =
-                 products.id
-
-            WHERE order_items.order_id = $1
-            `,
-            [order.id]
-          );
-
-        orders.push({
-          ...order,
-          items:
-            itemsResult.rows,
+      if (!existing.rows.length) {
+        return res.status(409).json({
+          success: false,
+          message:
+            "Order record needs support review. Do not pay again.",
         });
       }
 
       return res.json({
         success: true,
-        orders,
-      });
-    } catch (error) {
-      console.error(
-        "Get orders error:",
-        error
-      );
-
-      return res.status(500).json({
-        success: false,
-        message:
-          "Failed to fetch orders",
+        message: "Order already exists.",
+        order: existing.rows[0],
       });
     }
-  }
-);
 
-// =====================================================
-// GET SELLER'S CUSTOMER ORDERS
-// =====================================================
+    // Verify payment status.
+    if (payment.status !== "success") {
+      await client.query("ROLLBACK");
+      inTransaction = false;
 
-router.get(
-  "/seller/all",
-  protect,
-  async (req, res) => {
-    try {
-      const sellerId =
-        req.user.id;
-
-      const ordersResult =
-        await pool.query(
-          `
-          SELECT DISTINCT
-            orders.id,
-            orders.user_id,
-            orders.total_amount,
-            orders.status,
-            orders.created_at,
-
-            users.name AS customer_name,
-            users.email AS customer_email
-
-          FROM orders
-
-          INNER JOIN order_items
-            ON orders.id =
-               order_items.order_id
-
-          INNER JOIN products
-            ON order_items.product_id =
-               products.id
-
-          INNER JOIN users
-            ON orders.user_id =
-               users.id
-
-          WHERE products.seller_id = $1
-
-          ORDER BY orders.created_at DESC
-          `,
-          [sellerId]
-        );
-
-      const orders = [];
-
-      for (
-        const order of ordersResult.rows
-      ) {
-        const itemsResult =
-          await pool.query(
-            `
-            SELECT
-              order_items.id,
-              order_items.product_id,
-
-              products.name AS product_name,
-
-              order_items.quantity,
-              order_items.price,
-
-              products.image_url,
-              products.currency
-
-            FROM order_items
-
-            INNER JOIN products
-              ON order_items.product_id =
-                 products.id
-
-            WHERE order_items.order_id = $1
-              AND products.seller_id = $2
-
-            ORDER BY order_items.id ASC
-            `,
-            [
-              order.id,
-              sellerId,
-            ]
-          );
-
-        orders.push({
-          ...order,
-          items:
-            itemsResult.rows,
-        });
-      }
-
-      return res.json({
-        success: true,
-        orders,
-      });
-    } catch (error) {
-      console.error(
-        "Get seller orders error:",
-        error
-      );
-
-      return res.status(500).json({
+      return res.status(409).json({
         success: false,
         message:
-          "Failed to fetch seller orders",
+          "Payment has not been verified. If Paystack charged you, retry confirmation; do not pay again.",
       });
     }
-  }
-);
 
-// =====================================================
-// UPDATE SELLER ORDER STATUS
-// =====================================================
-router.put(
-  "/seller/:orderId/status",
-  protect,
-  async (req, res) => {
-    try {
-      const {
-        orderId,
-      } = req.params;
+    // Retrieve the original checkout snapshot.
+    const snapshot = payment.checkout_snapshot;
 
-      const {
-        status,
-      } = req.body;
+    if (
+      !snapshot ||
+      snapshot.schema_version !== 1 ||
+      !Array.isArray(snapshot.items) ||
+      !snapshot.items.length
+    ) {
+      await client.query("ROLLBACK");
+      inTransaction = false;
 
-      const sellerId =
-        req.user.id;
+      return res.status(409).json({
+        success: false,
+        message:
+          "This earlier payment needs reconciliation. If you were charged, do not pay again; contact support with the transaction reference.",
+      });
+    }
 
-      const allowedStatuses = [
-        "pending",
-        "processing",
-        "shipped",
-        "delivered",
-        "cancelled",
-      ];
+    const orderCurrency = String(
+      snapshot.order_currency || ""
+    ).toUpperCase();
+
+    if (!["USD", "NGN"].includes(orderCurrency)) {
+      throw new Error(
+        "Unexpected checkout currency in payment snapshot."
+      );
+    }
+
+    const totalMinor = Number(
+      snapshot.order_total_minor
+    );
+
+    const snapshotKobo = Number(
+      snapshot.expected_kobo
+    );
+
+    if (
+      !Number.isSafeInteger(totalMinor) ||
+      totalMinor <= 0 ||
+      !Number.isSafeInteger(snapshotKobo) ||
+      snapshotKobo <= 0 ||
+      Math.round(Number(payment.amount) * 100) !==
+        snapshotKobo ||
+      String(payment.currency).toUpperCase() !==
+        "NGN"
+    ) {
+      await client.query("ROLLBACK");
+      inTransaction = false;
+
+      return res.status(409).json({
+        success: false,
+        message:
+          "Payment values require support review. If you were charged, do not pay again.",
+      });
+    }
+
+    // Validate purchased items.
+    let computedMinor = 0;
+
+    const items = [];
+    const ids = new Set();
+
+    for (const entry of snapshot.items) {
+      const id = Number(entry.product_id);
+      const quantity = Number(entry.quantity);
+      const unitPriceMinor = Number(
+        entry.unit_price_minor
+      );
 
       if (
-        !allowedStatuses.includes(
-          status
-        )
+        !Number.isSafeInteger(id) ||
+        id <= 0 ||
+        ids.has(id) ||
+        !Number.isSafeInteger(quantity) ||
+        quantity <= 0 ||
+        !Number.isSafeInteger(unitPriceMinor) ||
+        unitPriceMinor <= 0
       ) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "Invalid order status",
-        });
+        throw new Error(
+          "Invalid payment snapshot items."
+        );
       }
 
-      const sellerOrderCheck =
-        await pool.query(
-          `
-          SELECT orders.id
+      ids.add(id);
 
-          FROM orders
+      computedMinor +=
+        quantity * unitPriceMinor;
 
-          INNER JOIN order_items
-            ON orders.id =
-               order_items.order_id
+      items.push({
+        id,
+        quantity,
+        unitPriceMinor,
+        sellerId: Number(entry.seller_id),
+      });
+    }
 
-          INNER JOIN products
-            ON order_items.product_id =
-               products.id
+    if (
+      !Number.isSafeInteger(computedMinor) ||
+      computedMinor !== totalMinor
+    ) {
+      throw new Error(
+        "Payment snapshot totals are inconsistent."
+      );
+    }
 
-          WHERE orders.id = $1
-            AND products.seller_id = $2
-
-          LIMIT 1
-          `,
-          [
-            orderId,
-            sellerId,
-          ]
-        );
-
-      if (
-        sellerOrderCheck.rows.length ===
-        0
-      ) {
-        return res.status(404).json({
-          success: false,
-          message:
-            "Order not found for this seller",
-        });
-      }
-
-      const updatedOrder =
-        await pool.query(
-          `
-          UPDATE orders
-          SET status = $1
-          WHERE id = $2
-          RETURNING
-            id,
-            user_id,
-            total_amount,
-            status,
-            created_at
-          `,
-          [
-            status,
-            orderId,
-          ]
-        );
-
-      // =================================================
-      // NOTIFY BUYER ABOUT STATUS CHANGE
-      // =================================================
-
-      await pool.query(
+    // Lock product rows and check stock.
+    for (
+      const item of [...items].sort(
+        (a, b) => a.id - b.id
+      )
+    ) {
+      const result = await client.query(
         `
-        INSERT INTO notifications (
-          user_id,
-          title,
-          message,
-          type,
-          is_read
+        SELECT id, name, stock, seller_id
+        FROM products
+        WHERE id = $1
+        FOR UPDATE
+        `,
+        [item.id]
+      );
+
+      if (
+        !result.rows.length ||
+        Number(result.rows[0].stock) <
+          item.quantity
+      ) {
+        await client.query("ROLLBACK");
+        inTransaction = false;
+
+        return res.status(409).json({
+          success: false,
+          message:
+            "A paid item is unavailable. Your payment requires assistance; do not pay again.",
+        });
+      }
+
+      if (
+        Number(result.rows[0].seller_id) !==
+        item.sellerId
+      ) {
+        await client.query("ROLLBACK");
+        inTransaction = false;
+
+        return res.status(409).json({
+          success: false,
+          message:
+            "A seller changed after payment. Contact support to resolve this paid order; do not pay again.",
+        });
+      }
+    }
+
+    // Retrieve saved delivery details.
+    const delivery =
+      snapshot.delivery &&
+      typeof snapshot.delivery === "object"
+        ? snapshot.delivery
+        : {};
+
+    // Create order.
+    const orderResult = await client.query(
+      `
+      INSERT INTO orders (
+        user_id, total_amount,
+        status, delivery
+      )
+      VALUES ($1, $2, 'processing', $3::jsonb)
+      RETURNING
+        id, user_id, total_amount,
+        status, created_at
+      `,
+      [
+        req.user.id,
+        (totalMinor / 100).toFixed(2),
+        JSON.stringify(delivery),
+      ]
+    );
+
+    const order = orderResult.rows[0];
+
+    // Save order items and reduce stock.
+    for (const item of items) {
+      await client.query(
+        `
+        INSERT INTO order_items (
+          order_id, product_id,
+          quantity, price
         )
-        VALUES (
-          $1,
-          $2,
-          $3,
-          $4,
-          FALSE
-        )
+        VALUES ($1, $2, $3, $4)
         `,
         [
-          updatedOrder.rows[0].user_id,
-          "Order status updated",
-          `Your GoldMart order #${orderId} is now "${status}".`,
-          "order",
+          order.id,
+          item.id,
+          item.quantity,
+          (item.unitPriceMinor / 100).toFixed(2),
         ]
       );
 
-      return res.json({
-        success: true,
-        message:
-          "Order status updated successfully",
-        order:
-          updatedOrder.rows[0],
-      });
-    } catch (error) {
-      console.error(
-        "Update seller order status error:",
-        error
+      await client.query(
+        `
+        UPDATE products
+        SET stock = stock - $1
+        WHERE id = $2
+        `,
+        [item.quantity, item.id]
       );
-
-      return res.status(500).json({
-        success: false,
-        message:
-          "Failed to update order status",
-      });
     }
-  }
-);
 
-// =====================================================
-// GET ONE ORDER
-// =====================================================
+    // Link payment to order.
+    await client.query(
+      `
+      UPDATE payments
+      SET order_id = $1,
+          updated_at = NOW()
+      WHERE id = $2
+      `,
+      [order.id, payment.id]
+    );
 
-router.get(
-  "/:orderId",
-  protect,
-  async (req, res) => {
-    try {
-      const {
-        orderId,
-      } = req.params;
+    // Notify buyer.
+    await client.query(
+      `
+      INSERT INTO notifications (
+        user_id, title, message,
+        type, is_read
+      )
+      VALUES ($1, $2, $3, 'order', FALSE)
+      `,
+      [
+        req.user.id,
+        "Order placed successfully",
+        `Your GoldMart order #${order.id} is being processed.`,
+      ]
+    );
 
-      const orderResult =
-        await pool.query(
-          `
-          SELECT *
-          FROM orders
-          WHERE id = $1
-            AND user_id = $2
-          `,
-          [
-            orderId,
-            req.user.id,
-          ]
+    // Notify sellers.
+    const sellers = [
+      ...new Set(
+        items
+          .map((item) => item.sellerId)
+          .filter(
+            (id) =>
+              Number.isInteger(id) &&
+              id > 0
+          )
+      ),
+    ];
+
+    for (const sellerId of sellers) {
+      await client.query(
+        `
+        INSERT INTO notifications (
+          user_id, title, message,
+          type, is_read
+        )
+        VALUES (
+          $1, 'New order received',
+          $2, 'seller', FALSE
+        )
+        `,
+        [
+          sellerId,
+          `You have received GoldMart order #${order.id}.`,
+        ]
+      );
+    }
+
+    // Remove purchased items from the cart.
+    for (const item of items) {
+      await client.query(
+        `
+        DELETE FROM cart_items ci
+        USING carts c
+        WHERE ci.cart_id = c.id
+          AND c.user_id = $1
+          AND ci.product_id = $2
+          AND ci.quantity = $3
+        `,
+        [
+          req.user.id,
+          item.id,
+          item.quantity,
+        ]
+      );
+    }
+
+    await client.query("COMMIT");
+    inTransaction = false;
+
+    return res.status(201).json({
+      success: true,
+      message:
+        "Verified payment confirmed and order created successfully.",
+      order,
+      payment: {
+        reference,
+        status: "success",
+        currency: "NGN",
+        amount_ngn: Number(payment.amount),
+      },
+      order_currency: orderCurrency,
+      order_total: totalMinor / 100,
+    });
+  } catch (error) {
+    if (inTransaction) {
+      try {
+        await client.query("ROLLBACK");
+      } catch (rollbackError) {
+        console.error(
+          "Order rollback error:",
+          rollbackError.message
         );
-
-      if (
-        orderResult.rows.length === 0
-      ) {
-        return res.status(404).json({
-          success: false,
-          message:
-            "Order not found",
-        });
       }
-
-      const itemsResult =
-        await pool.query(
-          `
-          SELECT
-            order_items.id,
-            order_items.product_id,
-            order_items.quantity,
-            order_items.price,
-
-            products.name,
-            products.image_url,
-            products.seller_id,
-            products.currency
-
-          FROM order_items
-
-          LEFT JOIN products
-            ON order_items.product_id =
-               products.id
-
-          WHERE order_items.order_id = $1
-          `,
-          [orderId]
-        );
-
-      return res.json({
-        success: true,
-
-        order:
-          orderResult.rows[0],
-
-        items:
-          itemsResult.rows,
-      });
-    } catch (error) {
-      console.error(
-        "Get order error:",
-        error
-      );
-
-      return res.status(500).json({
-        success: false,
-        message:
-          "Failed to fetch order",
-      });
     }
-  }
-);
 
-module.exports = router;
+    console.error(
+      "Create order error:",
+      error.message
+    );
+
+    return res.status(500).json({
+      success: false,
+      message:
+        "Unable to finalize this payment. If Paystack charged you, do not pay again; contact support with your reference.",
+    });
+  } finally {
+    client.release();
+  }
+});
