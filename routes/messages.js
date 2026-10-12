@@ -1,17 +1,33 @@
-const express = require("express");
-const router = express.Router();
 
+const express = require("express");
 const pool = require("../db");
 const { protect } = require("../middleware/auth");
 
-/*
-  GET /api/messages/conversations
+const router = express.Router();
 
-  Get all conversations belonging to the logged-in user.
-*/
+// =====================================================
+// HELPERS
+// =====================================================
+
+function validId(value) {
+  const id = Number(value);
+
+  return Number.isSafeInteger(id) && id > 0
+    ? id
+    : null;
+}
+
+function getUserId(req) {
+  return validId(req.user?.id ?? req.user?.userId);
+}
+
+// =====================================================
+// GET ALL BUYER / SELLER CONVERSATIONS
+// =====================================================
+
 router.get("/conversations", protect, async (req, res) => {
   try {
-    const userId = Number(req.user.id);
+    const userId = getUserId(req);
 
     if (!userId) {
       return res.status(401).json({
@@ -30,13 +46,18 @@ router.get("/conversations", protect, async (req, res) => {
         c.created_at,
         c.updated_at,
 
+        buyer.name AS buyer_name,
+        seller.name AS seller_name,
+
         CASE
-          WHEN c.buyer_id = $1 THEN seller.name
+          WHEN c.buyer_id = $1
+            THEN seller.name
           ELSE buyer.name
         END AS other_user_name,
 
         CASE
-          WHEN c.buyer_id = $1 THEN c.seller_id
+          WHEN c.buyer_id = $1
+            THEN c.seller_id
           ELSE c.buyer_id
         END AS other_user_id,
 
@@ -46,23 +67,20 @@ router.get("/conversations", protect, async (req, res) => {
         lm.message AS last_message,
         lm.created_at AS last_message_at,
 
-        COALESCE(
-          (
-            SELECT COUNT(*)
-            FROM messages m2
-            WHERE m2.conversation_id = c.id
-              AND m2.sender_id <> $1
-              AND m2.is_read = FALSE
-          ),
-          0
+        (
+          SELECT COUNT(*)
+          FROM messages m2
+          WHERE m2.conversation_id = c.id
+            AND m2.sender_id <> $1
+            AND m2.is_read = FALSE
         ) AS unread_count
 
       FROM conversations c
 
-      JOIN users buyer
+      INNER JOIN users buyer
         ON buyer.id = c.buyer_id
 
-      JOIN users seller
+      INNER JOIN users seller
         ON seller.id = c.seller_id
 
       LEFT JOIN products p
@@ -74,14 +92,14 @@ router.get("/conversations", protect, async (req, res) => {
           m.created_at
         FROM messages m
         WHERE m.conversation_id = c.id
-        ORDER BY m.created_at DESC
+        ORDER BY m.created_at DESC, m.id DESC
         LIMIT 1
       ) lm ON TRUE
 
       WHERE c.buyer_id = $1
          OR c.seller_id = $1
 
-      ORDER BY c.updated_at DESC
+      ORDER BY c.updated_at DESC, c.id DESC
       `,
       [userId]
     );
@@ -91,7 +109,7 @@ router.get("/conversations", protect, async (req, res) => {
       conversations: result.rows,
     });
   } catch (error) {
-    console.error("GET conversations error:", error);
+    console.error("Get conversations error:", error);
 
     return res.status(500).json({
       success: false,
@@ -100,23 +118,20 @@ router.get("/conversations", protect, async (req, res) => {
   }
 });
 
+// =====================================================
+// CREATE OR FIND A BUYER / SELLER CONVERSATION
+// =====================================================
 
-/*
-  POST /api/messages/conversations
-
-  Create a buyer -> seller conversation.
-*/
 router.post("/conversations", protect, async (req, res) => {
   try {
-    const buyerId = Number(req.user.id);
-    const sellerId = Number(req.body.sellerId);
+    const buyerId = getUserId(req);
+    const sellerId = validId(req.body?.sellerId);
 
     const productId =
-      req.body.productId === null ||
-      req.body.productId === undefined ||
+      req.body?.productId == null ||
       req.body.productId === ""
         ? null
-        : Number(req.body.productId);
+        : validId(req.body.productId);
 
     if (!buyerId) {
       return res.status(401).json({
@@ -125,10 +140,21 @@ router.post("/conversations", protect, async (req, res) => {
       });
     }
 
-    if (!sellerId || Number.isNaN(sellerId)) {
+    if (!sellerId) {
       return res.status(400).json({
         success: false,
-        message: "Seller ID is required",
+        message: "Valid seller ID is required",
+      });
+    }
+
+    if (
+      req.body?.productId != null &&
+      req.body.productId !== "" &&
+      !productId
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid product ID",
       });
     }
 
@@ -139,100 +165,88 @@ router.post("/conversations", protect, async (req, res) => {
       });
     }
 
-    /*
-      Make sure the target user exists
-      and is actually a seller.
-    */
-    const sellerCheck = await pool.query(
+    const sellerResult = await pool.query(
       `
       SELECT id, name, role
       FROM users
       WHERE id = $1
+      LIMIT 1
       `,
       [sellerId]
     );
 
-    if (sellerCheck.rows.length === 0) {
+    if (!sellerResult.rows.length) {
       return res.status(404).json({
         success: false,
         message: "Seller not found",
       });
     }
 
-    if (sellerCheck.rows[0].role !== "seller") {
-      return res.status(400).json({
-        success: false,
-        message: "Selected user is not a seller",
-      });
-    }
-
-    /*
-      If a product was supplied,
-      make sure it exists.
-    */
-    if (productId !== null) {
-      const productCheck = await pool.query(
+    // Validate the product belongs to the selected seller.
+    if (productId) {
+      const productResult = await pool.query(
         `
         SELECT id
         FROM products
         WHERE id = $1
+          AND seller_id = $2
+        LIMIT 1
         `,
-        [productId]
+        [productId, sellerId]
       );
 
-      if (productCheck.rows.length === 0) {
-        return res.status(404).json({
+      if (!productResult.rows.length) {
+        return res.status(400).json({
           success: false,
-          message: "Product not found",
+          message:
+            "This product does not belong to the selected seller",
+        });
+      }
+    } else if (
+      sellerResult.rows[0].role !== "seller"
+    ) {
+      const sellerProducts = await pool.query(
+        `
+        SELECT id
+        FROM products
+        WHERE seller_id = $1
+        LIMIT 1
+        `,
+        [sellerId]
+      );
+
+      if (!sellerProducts.rows.length) {
+        return res.status(400).json({
+          success: false,
+          message: "Selected account is not a seller",
         });
       }
     }
 
-    /*
-      Check whether this conversation
-      already exists.
-    */
-    let existing;
+    // Find an existing conversation.
+    const existing = await pool.query(
+      `
+      SELECT id
+      FROM conversations
+      WHERE buyer_id = $1
+        AND seller_id = $2
+        AND product_id IS NOT DISTINCT FROM $3::integer
+      ORDER BY id ASC
+      LIMIT 1
+      `,
+      [buyerId, sellerId, productId]
+    );
 
-    if (productId === null) {
-      existing = await pool.query(
-        `
-        SELECT id
-        FROM conversations
-        WHERE buyer_id = $1
-          AND seller_id = $2
-          AND product_id IS NULL
-        LIMIT 1
-        `,
-        [buyerId, sellerId]
-      );
-    } else {
-      existing = await pool.query(
-        `
-        SELECT id
-        FROM conversations
-        WHERE buyer_id = $1
-          AND seller_id = $2
-          AND product_id = $3
-        LIMIT 1
-        `,
-        [buyerId, sellerId, productId]
-      );
-    }
-
-    if (existing.rows.length > 0) {
+    if (existing.rows.length) {
       return res.json({
         success: true,
+        existing: true,
         conversation: {
           id: existing.rows[0].id,
         },
-        existing: true,
       });
     }
 
-    /*
-      Create the conversation.
-    */
     const created = await pool.query(
       `
       INSERT INTO conversations (
@@ -254,11 +268,11 @@ router.post("/conversations", protect, async (req, res) => {
 
     return res.status(201).json({
       success: true,
-      conversation: created.rows[0],
       existing: false,
+      conversation: created.rows[0],
     });
   } catch (error) {
-    console.error("POST conversation error:", error);
+    console.error("Create conversation error:", error);
 
     return res.status(500).json({
       success: false,
@@ -267,19 +281,19 @@ router.post("/conversations", protect, async (req, res) => {
   }
 });
 
+// =====================================================
+// GET ONE CONVERSATION AND ITS MESSAGES
+// =====================================================
 
-/*
-  GET /api/messages/conversations/:conversationId
-
-  Load one conversation and all its messages.
-*/
 router.get(
   "/conversations/:conversationId",
   protect,
   async (req, res) => {
     try {
-      const userId = Number(req.user.id);
-      const conversationId = Number(req.params.conversationId);
+      const userId = getUserId(req);
+      const conversationId = validId(
+        req.params.conversationId
+      );
 
       if (!userId) {
         return res.status(401).json({
@@ -288,17 +302,14 @@ router.get(
         });
       }
 
-      if (!conversationId || Number.isNaN(conversationId)) {
+      if (!conversationId) {
         return res.status(400).json({
           success: false,
           message: "Invalid conversation ID",
         });
       }
 
-      /*
-        Make sure the logged-in user
-        belongs to this conversation.
-      */
+      // Only the buyer or seller can open this chat.
       const conversationResult = await pool.query(
         `
         SELECT
@@ -337,16 +348,13 @@ router.get(
         [conversationId, userId]
       );
 
-      if (conversationResult.rows.length === 0) {
+      if (!conversationResult.rows.length) {
         return res.status(404).json({
           success: false,
           message: "Conversation not found",
         });
       }
 
-      /*
-        Get all messages.
-      */
       const messagesResult = await pool.query(
         `
         SELECT
@@ -365,15 +373,12 @@ router.get(
 
         WHERE m.conversation_id = $1
 
-        ORDER BY m.created_at ASC
+        ORDER BY m.created_at ASC, m.id ASC
         `,
         [conversationId]
       );
 
-      /*
-        Mark messages from the other
-        person as read.
-      */
+      // Mark only the other person's messages as read.
       await pool.query(
         `
         UPDATE messages
@@ -391,7 +396,7 @@ router.get(
         messages: messagesResult.rows,
       });
     } catch (error) {
-      console.error("GET conversation error:", error);
+      console.error("Get conversation error:", error);
 
       return res.status(500).json({
         success: false,
@@ -401,22 +406,22 @@ router.get(
   }
 );
 
+// =====================================================
+// SEND MESSAGE AS BUYER OR SELLER
+// =====================================================
 
-/*
-  POST /api/messages/conversations/:conversationId
-
-  Send a message.
-*/
 router.post(
   "/conversations/:conversationId",
   protect,
   async (req, res) => {
     try {
-      const userId = Number(req.user.id);
-      const conversationId = Number(req.params.conversationId);
+      const userId = getUserId(req);
+      const conversationId = validId(
+        req.params.conversationId
+      );
 
       const message =
-        typeof req.body.message === "string"
+        typeof req.body?.message === "string"
           ? req.body.message.trim()
           : "";
 
@@ -427,31 +432,21 @@ router.post(
         });
       }
 
-      if (!conversationId || Number.isNaN(conversationId)) {
+      if (!conversationId) {
         return res.status(400).json({
           success: false,
           message: "Invalid conversation ID",
         });
       }
 
-      if (!message) {
+      if (!message || message.length > 5000) {
         return res.status(400).json({
           success: false,
-          message: "Message cannot be empty",
+          message:
+            "Message must contain between 1 and 5000 characters",
         });
       }
 
-      if (message.length > 5000) {
-        return res.status(400).json({
-          success: false,
-          message: "Message is too long",
-        });
-      }
-
-      /*
-        Find conversation and verify
-        that the user belongs to it.
-      */
       const conversationResult = await pool.query(
         `
         SELECT
@@ -469,7 +464,7 @@ router.post(
         [conversationId, userId]
       );
 
-      if (conversationResult.rows.length === 0) {
+      if (!conversationResult.rows.length) {
         return res.status(404).json({
           success: false,
           message: "Conversation not found",
@@ -478,22 +473,14 @@ router.post(
 
       const conversation = conversationResult.rows[0];
 
-      /*
-        Work out who receives the message.
-      */
       const recipientId =
         Number(conversation.buyer_id) === userId
           ? Number(conversation.seller_id)
           : Number(conversation.buyer_id);
 
-      /*
-        Get sender information.
-      */
       const senderResult = await pool.query(
         `
-        SELECT
-          id,
-          name
+        SELECT name
         FROM users
         WHERE id = $1
         LIMIT 1
@@ -501,18 +488,10 @@ router.post(
         [userId]
       );
 
-      if (senderResult.rows.length === 0) {
-        return res.status(404).json({
-          success: false,
-          message: "Sender account not found",
-        });
-      }
+      const senderName =
+        senderResult.rows[0]?.name || "GoldMart user";
 
-      const senderName = senderResult.rows[0].name;
-
-      /*
-        Save the message.
-      */
+      // Save the actual chat message.
       const messageResult = await pool.query(
         `
         INSERT INTO messages (
@@ -521,7 +500,6 @@ router.post(
           message
         )
         VALUES ($1, $2, $3)
-
         RETURNING
           id,
           conversation_id,
@@ -533,9 +511,6 @@ router.post(
         [conversationId, userId, message]
       );
 
-      /*
-        Update conversation activity.
-      */
       await pool.query(
         `
         UPDATE conversations
@@ -545,10 +520,10 @@ router.post(
         [conversationId]
       );
 
-      /*
-        Create a private notification
-        for the person receiving the message.
-      */
+      // =================================================
+      // NOTIFY THE OTHER PERSON
+      // =================================================
+
       try {
         await pool.query(
           `
@@ -557,27 +532,27 @@ router.post(
             type,
             title,
             message,
-            is_read
+            is_read,
+            conversation_id
           )
           VALUES (
             $1,
             'message',
             'New message',
             $2,
-            FALSE
+            FALSE,
+            $3
           )
           `,
           [
             recipientId,
             `${senderName} sent you a new message.`,
+            conversationId,
           ]
         );
       } catch (notificationError) {
-        /*
-          If notification creation fails,
-          the actual chat message should
-          still succeed.
-        */
+        // The message is still saved if the
+        // notification could not be created.
         console.error(
           "Message notification error:",
           notificationError
@@ -592,7 +567,7 @@ router.post(
         },
       });
     } catch (error) {
-      console.error("POST message error:", error);
+      console.error("Send message error:", error);
 
       return res.status(500).json({
         success: false,
@@ -601,6 +576,5 @@ router.post(
     }
   }
 );
-
 
 module.exports = router;
