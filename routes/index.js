@@ -1,3 +1,4 @@
+
 const express = require("express");
 
 const authRoutes = require("./auth");
@@ -10,6 +11,9 @@ const sellerRoutes = require("./seller");
 const reviewRoutes = require("./reviews");
 const notificationRoutes = require("./notifications");
 
+// New buyer protection routes
+const orderProtectionRoutes = require("./orderProtection");
+
 const router = express.Router();
 
 router.use("/auth", authRoutes);
@@ -21,5 +25,8 @@ router.use("/payments", paymentRoutes);
 router.use("/seller", sellerRoutes);
 router.use("/reviews", reviewRoutes);
 router.use("/notifications", notificationRoutes);
+
+// Cancellation, refund requests and delivery confirmation
+router.use("/order-protection", orderProtectionRoutes);
 
 module.exports = router;
