@@ -5,26 +5,99 @@ const { protect } = require("../middleware/auth");
 
 const router = express.Router();
 
-const PAYSTACK_SECRET_KEY =
-  process.env.PAYSTACK_SECRET_KEY;
+const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY;
 
-const FRONTEND_URL =
-  process.env.FRONTEND_URL ||
-  "http://localhost:3000";
+const FRONTEND_URL = (
+  process.env.FRONTEND_URL || "http://localhost:3000"
+).replace(/\/$/, "");
 
-const USD_TO_NGN_RATE =
-  Number(process.env.USD_TO_NGN_RATE) || 1500;
+const USD_TO_NGN_RATE = Number(
+  process.env.USD_TO_NGN_RATE || 1500
+);
 
-function normalizeCurrency(currency) {
-  return String(currency || "USD").toUpperCase();
+// =====================================================
+// MONEY HELPERS
+// =====================================================
+
+function toMinor(value) {
+  if (typeof value === "number") {
+    if (
+      !Number.isFinite(value) ||
+      value < 0 ||
+      !Number.isSafeInteger(Math.round(value * 100))
+    ) {
+      throw new Error("Invalid monetary amount in cart.");
+    }
+
+    return Math.round(value * 100);
+  }
+
+  const s = String(value).trim();
+  const match = /^(\d+)(?:\.(\d{1,2}))?$/.exec(s);
+
+  if (!match) {
+    throw new Error("Invalid monetary amount in cart.");
+  }
+
+  const minor =
+    Number(match[1]) * 100 +
+    Number((match[2] || "").padEnd(2, "0"));
+
+  if (!Number.isSafeInteger(minor)) {
+    throw new Error("Monetary amount is too large.");
+  }
+
+  return minor;
+}
+
+function currencyOf(value) {
+  return String(value || "USD").trim().toUpperCase();
 }
 
 // =====================================================
-// PAYSTACK CONFIG
+// PAYSTACK REQUEST HELPER
+// =====================================================
+
+async function fetchPaystack(path, options) {
+  const response = await fetch(
+    `https://api.paystack.co${path}`,
+    {
+      ...options,
+      headers: {
+        Authorization: `Bearer ${PAYSTACK_SECRET_KEY}`,
+        Accept: "application/json",
+        ...(options && options.headers
+          ? options.headers
+          : {}),
+      },
+    }
+  );
+
+  const data = await response.json();
+
+  if (
+    !response.ok ||
+    !data.status ||
+    !data.data
+  ) {
+    const error = new Error(
+      data.message || "Payment provider is unavailable."
+    );
+
+    error.httpStatus = 502;
+
+    throw error;
+  }
+
+  return data.data;
+}
+
+// =====================================================
+// PAYMENT CONFIGURATION
 // =====================================================
 
 router.get("/config", protect, (req, res) => {
-  return res.json({
+  res.json({
     success: true,
     configured: Boolean(PAYSTACK_SECRET_KEY),
     currency: "NGN",
@@ -36,234 +109,376 @@ router.get("/config", protect, (req, res) => {
 // INITIALIZE PAYMENT
 // =====================================================
 
-router.post(
-  "/initialize",
-  protect,
-  async (req, res) => {
-    try {
-      if (!PAYSTACK_SECRET_KEY) {
-        return res.status(500).json({
-          success: false,
-          message:
-            "Payment provider is not configured.",
-        });
-      }
-
-      const {
-        email,
-        amount,
-        currency = "USD",
-        metadata = {},
-      } = req.body;
-
-      if (!email) {
-        return res.status(400).json({
-          success: false,
-          message: "Email is required.",
-        });
-      }
-
-      const numericAmount = Number(amount);
-
-      if (
-        !Number.isFinite(numericAmount) ||
-        numericAmount <= 0
-      ) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "A valid payment amount is required.",
-        });
-      }
-
-      const requestedCurrency =
-        normalizeCurrency(currency);
-
-      let amountUSD;
-      let amountNGN;
-
-      if (requestedCurrency === "USD") {
-        amountUSD = numericAmount;
-
-        amountNGN = Math.round(
-          amountUSD * USD_TO_NGN_RATE
-        );
-      } else if (requestedCurrency === "NGN") {
-        amountNGN = numericAmount;
-
-        amountUSD =
-          amountNGN / USD_TO_NGN_RATE;
-      } else {
-        return res.status(400).json({
-          success: false,
-          message:
-            "GoldMart currently supports USD and NGN checkout.",
-        });
-      }
-
-      if (
-        !Number.isFinite(amountNGN) ||
-        amountNGN <= 0
-      ) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "Unable to calculate NGN payment amount.",
-        });
-      }
-
-      const amountInKobo =
-        Math.round(amountNGN * 100);
-
-      const reference =
-        `GM-${Date.now()}-${crypto
-          .randomBytes(5)
-          .toString("hex")
-          .toUpperCase()}`;
-
-      const response = await fetch(
-        "https://api.paystack.co/transaction/initialize",
-        {
-          method: "POST",
-
-          headers: {
-            Authorization:
-              `Bearer ${PAYSTACK_SECRET_KEY}`,
-
-            "Content-Type":
-              "application/json",
-          },
-
-          body: JSON.stringify({
-            email,
-
-            amount: amountInKobo,
-
-            currency: "NGN",
-
-            reference,
-
-            callback_url:
-              `${FRONTEND_URL}/order-success`,
-
-            metadata: {
-              user_id: req.user.id,
-
-              goldmart_currency:
-                requestedCurrency,
-
-              goldmart_amount_usd:
-                Number(
-                  amountUSD.toFixed(2)
-                ),
-
-              goldmart_amount_ngn:
-                amountNGN,
-
-              usd_to_ngn_rate:
-                USD_TO_NGN_RATE,
-
-              ...metadata,
-            },
-          }),
-        }
-      );
-
-      const data = await response.json();
-
-      if (
-        !response.ok ||
-        !data.status ||
-        !data.data
-      ) {
-        console.error(
-          "Paystack initialization failed:",
-          data
-        );
-
-        return res.status(400).json({
-          success: false,
-          message:
-            data.message ||
-            "Unable to initialize payment.",
-        });
-      }
-
-      await pool.query(
-        `
-        INSERT INTO payments (
-          user_id,
-          reference,
-          amount,
-          currency,
-          status,
-          payment_method
-        )
-        VALUES (
-          $1,
-          $2,
-          $3,
-          $4,
-          $5,
-          $6
-        )
-        `,
-        [
-          req.user.id,
-          reference,
-          amountNGN,
-          "NGN",
-          "pending",
-          metadata.payment_method ||
-            "paystack",
-        ]
-      );
-
-      return res.json({
-        success: true,
-
-        message:
-          "Payment initialized successfully.",
-
-        payment: {
-          reference,
-
-          authorization_url:
-            data.data.authorization_url,
-
-          access_code:
-            data.data.access_code,
-
-          amount_usd:
-            Number(
-              amountUSD.toFixed(2)
-            ),
-
-          amount_ngn:
-            amountNGN,
-
-          currency: "NGN",
-
-          exchange_rate:
-            USD_TO_NGN_RATE,
-
-          status: "pending",
-        },
-      });
-    } catch (error) {
-      console.error(
-        "Payment initialization error:",
-        error
-      );
-
-      return res.status(500).json({
+router.post("/initialize", protect, async (req, res) => {
+  try {
+    if (!PAYSTACK_SECRET_KEY) {
+      return res.status(503).json({
         success: false,
-        message:
-          "Failed to initialize payment.",
+        message: "Payment provider is not configured.",
       });
     }
+
+    if (
+      !Number.isFinite(USD_TO_NGN_RATE) ||
+      USD_TO_NGN_RATE <= 0
+    ) {
+      return res.status(503).json({
+        success: false,
+        message: "Checkout conversion rate is not configured.",
+      });
+    }
+
+    const email = String(
+      req.body?.email || ""
+    ).trim();
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({
+        success: false,
+        message: "A valid email is required.",
+      });
+    }
+
+    // Read actual cart prices directly from Neon.
+    const result = await pool.query(
+      `
+      SELECT
+        p.id AS product_id,
+        p.name,
+        p.price,
+        p.currency,
+        p.stock,
+        p.seller_id,
+        ci.quantity
+      FROM carts c
+      JOIN cart_items ci
+        ON ci.cart_id = c.id
+      JOIN products p
+        ON p.id = ci.product_id
+      WHERE c.user_id = $1
+      ORDER BY p.id
+      `,
+      [req.user.id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Your cart is empty.",
+      });
+    }
+
+    // =================================================
+    // CHECK CURRENCIES
+    // =================================================
+
+    const currencies = [
+      ...new Set(
+        result.rows.map((item) =>
+          currencyOf(item.currency)
+        )
+      ),
+    ];
+
+    if (
+      currencies.length !== 1 ||
+      !["USD", "NGN"].includes(currencies[0])
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Checkout requires one supported currency: USD or NGN.",
+      });
+    }
+
+    const orderCurrency = currencies[0];
+
+    let orderTotalMinor = 0;
+
+    const items = [];
+
+    // =================================================
+    // CALCULATE TOTAL FROM DATABASE
+    // =================================================
+
+    for (const row of result.rows) {
+      const quantity = Number(row.quantity);
+
+      if (
+        !Number.isInteger(quantity) ||
+        quantity <= 0 ||
+        quantity > Number(row.stock)
+      ) {
+        return res.status(409).json({
+          success: false,
+          message:
+            `${row.name} is out of stock or has an invalid quantity. Update your cart.`,
+        });
+      }
+
+      const unitPriceMinor = toMinor(row.price);
+
+      if (unitPriceMinor <= 0) {
+        return res.status(409).json({
+          success: false,
+          message:
+            `The price for ${row.name} needs correction before checkout.`,
+        });
+      }
+
+      orderTotalMinor += unitPriceMinor * quantity;
+
+      if (!Number.isSafeInteger(orderTotalMinor)) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Cart total exceeds the supported limit.",
+        });
+      }
+
+      items.push({
+        product_id: Number(row.product_id),
+        name: String(row.name),
+        seller_id:
+          row.seller_id == null
+            ? null
+            : Number(row.seller_id),
+        quantity,
+        unit_price_minor: unitPriceMinor,
+      });
+    }
+
+    // =================================================
+    // COMPARE FRONTEND WITH DATABASE
+    // =================================================
+
+    const submittedCurrency = currencyOf(
+      req.body?.currency || orderCurrency
+    );
+
+    const submittedAmount = req.body?.amount;
+
+    if (
+      submittedCurrency !== orderCurrency ||
+      (
+        submittedAmount != null &&
+        toMinor(submittedAmount) !== orderTotalMinor
+      )
+    ) {
+      return res.status(409).json({
+        success: false,
+        message:
+          "Your cart prices have changed. Refresh the checkout page before paying.",
+      });
+    }
+
+    // =================================================
+    // CONVERT TO PAYSTACK KOBO
+    // =================================================
+
+    const expectedKobo =
+      orderCurrency === "USD"
+        ? Math.round(
+            orderTotalMinor * USD_TO_NGN_RATE
+          )
+        : orderTotalMinor;
+
+    if (
+      !Number.isSafeInteger(expectedKobo) ||
+      expectedKobo <= 0
+    ) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Payment amount cannot be calculated safely.",
+      });
+    }
+
+    // =================================================
+    // GENERATE UNIQUE PAYMENT REFERENCE
+    // =================================================
+
+    const reference =
+      `GM-${Date.now()}-${crypto
+        .randomBytes(5)
+        .toString("hex")
+        .toUpperCase()}`;
+
+    // =================================================
+    // VALIDATE DELIVERY INFORMATION
+    // =================================================
+
+    const rawDelivery = req.body?.metadata?.delivery;
+
+    if (
+      !rawDelivery ||
+      typeof rawDelivery !== "object" ||
+      Array.isArray(rawDelivery)
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Delivery information is required.",
+      });
+    }
+
+    const delivery = {};
+
+    for (const field of [
+      "firstName",
+      "lastName",
+      "email",
+      "phone",
+      "address",
+      "city",
+      "state",
+    ]) {
+      const value = String(
+        rawDelivery[field] || ""
+      ).trim();
+
+      if (
+        !value ||
+        value.length > (
+          field === "address" ? 500 : 150
+        )
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Please complete valid delivery information.",
+        });
+      }
+
+      delivery[field] = value;
+    }
+
+    // =================================================
+    // SAVE FIXED CHECKOUT SNAPSHOT
+    // =================================================
+
+    const snapshot = {
+      schema_version: 1,
+      delivery,
+      order_currency: orderCurrency,
+      order_total_minor: orderTotalMinor,
+      expected_kobo: expectedKobo,
+      items,
+    };
+
+    const metadata = {
+      goldmart_reference: reference,
+      goldmart_user_id: Number(req.user.id),
+      goldmart_order_currency: orderCurrency,
+      goldmart_order_total_minor: orderTotalMinor,
+    };
+
+    // =================================================
+    // INITIALIZE PAYSTACK TRANSACTION
+    // =================================================
+
+    const transaction = await fetchPaystack(
+      "/transaction/initialize",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          email,
+          amount: expectedKobo,
+          currency: "NGN",
+          reference,
+          callback_url:
+            `${FRONTEND_URL}/order-success`,
+          metadata,
+        }),
+      }
+    );
+
+    // =================================================
+    // SAVE PAYMENT IN NEON
+    // =================================================
+
+    await pool.query(
+      `
+      INSERT INTO payments (
+        user_id,
+        reference,
+        amount,
+        currency,
+        status,
+        payment_method,
+        checkout_snapshot,
+        exchange_rate
+      )
+      VALUES (
+        $1, $2, $3, 'NGN', 'pending',
+        $4, $5::jsonb, $6
+      )
+      `,
+      [
+        req.user.id,
+        reference,
+        (expectedKobo / 100).toFixed(2),
+        [
+          "card",
+          "transfer",
+          "wallet",
+        ].includes(
+          req.body?.metadata?.payment_method
+        )
+          ? req.body.metadata.payment_method
+          : "paystack",
+        JSON.stringify(snapshot),
+        USD_TO_NGN_RATE,
+      ]
+    );
+
+    return res.json({
+      success: true,
+      message: "Payment initialized successfully.",
+      payment: {
+        reference,
+        authorization_url:
+          transaction.authorization_url,
+        access_code:
+          transaction.access_code,
+        amount_ngn: expectedKobo / 100,
+        amount_usd:
+          orderCurrency === "USD"
+            ? orderTotalMinor / 100
+            : Number(
+                (
+                  expectedKobo /
+                  (100 * USD_TO_NGN_RATE)
+                ).toFixed(2)
+              ),
+        currency: "NGN",
+        exchange_rate: USD_TO_NGN_RATE,
+        status: "pending",
+      },
+    });
+  } catch (error) {
+    console.error(
+      "Payment initialization error:",
+      error.message
+    );
+
+    res.status(
+      error.httpStatus ||
+      (
+        error.message.includes("monetary")
+          ? 400
+          : 500
+      )
+    ).json({
+      success: false,
+      message: error.httpStatus
+        ? "Unable to start payment with Paystack."
+        : "Unable to initialize payment safely. Try again later.",
+    });
   }
-);
+});
 
 // =====================================================
 // VERIFY PAYMENT
@@ -271,386 +486,194 @@ router.post(
 
 router.get(
   "/verify/:reference",
+  protect,
   async (req, res) => {
     try {
       if (!PAYSTACK_SECRET_KEY) {
-        return res.status(500).json({
+        return res.status(503).json({
           success: false,
           message:
             "Payment provider is not configured.",
         });
       }
 
-      const reference =
-        String(
-          req.params.reference || ""
-        ).trim();
+      const reference = String(
+        req.params.reference || ""
+      ).trim();
 
-      if (!reference) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "Payment reference is required.",
-        });
-      }
+      const paymentResult = await pool.query(
+        `
+        SELECT
+          id,
+          user_id,
+          order_id,
+          reference,
+          amount,
+          currency,
+          status
+        FROM payments
+        WHERE reference = $1
+          AND user_id = $2
+        LIMIT 1
+        `,
+        [reference, req.user.id]
+      );
 
-      // -------------------------------------------------
-      // FIND GOLDMART PAYMENT
-      // -------------------------------------------------
-
-      const paymentResult =
-        await pool.query(
-          `
-          SELECT
-            id,
-            order_id,
-            user_id,
-            reference,
-            amount,
-            currency,
-            status,
-            payment_method,
-            created_at,
-            updated_at
-          FROM payments
-          WHERE reference = $1
-          LIMIT 1
-          `,
-          [reference]
-        );
-
-      if (
-        paymentResult.rows.length === 0
-      ) {
+      if (!paymentResult.rows.length) {
         return res.status(404).json({
           success: false,
           message:
-            "Payment record not found.",
+            "Payment not found for this account.",
         });
       }
 
-      const payment =
-        paymentResult.rows[0];
+      const payment = paymentResult.rows[0];
 
-      // -------------------------------------------------
-      // ALREADY VERIFIED
-      // -------------------------------------------------
+      // Prevent repeated verification requests
+      // from creating duplicate payments.
 
       if (payment.status === "success") {
         return res.json({
           success: true,
-
-          message:
-            "Payment already verified.",
-
+          message: "Payment already verified.",
           payment: {
-            id: payment.id,
-
-            user_id:
-              payment.user_id,
-
-            order_id:
-              payment.order_id,
-
-            reference:
-              payment.reference,
-
+            reference,
             status: "success",
-
-            amount_ngn:
-              Number(payment.amount),
-
-            currency:
-              normalizeCurrency(
-                payment.currency
-              ),
-
-            amount_usd:
-              Number(
-                (
-                  Number(payment.amount) /
-                  USD_TO_NGN_RATE
-                ).toFixed(2)
-              ),
-
-            exchange_rate:
-              USD_TO_NGN_RATE,
+            order_id: payment.order_id,
+            amount_ngn: Number(payment.amount),
+            currency: "NGN",
           },
         });
       }
 
-      // -------------------------------------------------
-      // ASK PAYSTACK
-      // -------------------------------------------------
+      // =================================================
+      // VERIFY DIRECTLY WITH PAYSTACK
+      // =================================================
 
-      const response =
-        await fetch(
-          `https://api.paystack.co/transaction/verify/${encodeURIComponent(
-            reference
-          )}`,
-          {
-            method: "GET",
+      const transaction = await fetchPaystack(
+        `/transaction/verify/${encodeURIComponent(
+          reference
+        )}`,
+        { method: "GET" }
+      );
 
-            headers: {
-              Authorization:
-                `Bearer ${PAYSTACK_SECRET_KEY}`,
+      const expectedKobo = Math.round(
+        Number(payment.amount) * 100
+      );
 
-              Accept:
-                "application/json",
-            },
-          }
-        );
+      const actualKobo = Number(
+        transaction.amount
+      );
 
-      const data =
-        await response.json();
+      // =================================================
+      // VALIDATE REFERENCE, CURRENCY AND AMOUNT
+      // =================================================
 
       if (
-        !response.ok ||
-        !data.status
-      ) {
-        console.error(
-          "Paystack verification failed:",
-          data
-        );
-
-        return res.status(400).json({
-          success: false,
-          message:
-            data.message ||
-            "Unable to verify payment.",
-        });
-      }
-
-      const transaction =
-        data.data;
-
-      if (!transaction) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "Paystack returned no transaction data.",
-        });
-      }
-
-      // -------------------------------------------------
-      // VERIFY REFERENCE
-      // -------------------------------------------------
-
-      if (
-        String(
-          transaction.reference
-        ) !== reference
+        String(transaction.reference) !== reference ||
+        String(transaction.currency).toUpperCase() !==
+          "NGN" ||
+        !Number.isSafeInteger(actualKobo) ||
+        actualKobo !== expectedKobo
       ) {
         await pool.query(
           `
           UPDATE payments
           SET
-            status = 'reference_mismatch',
-            updated_at = CURRENT_TIMESTAMP
+            status = 'needs_review',
+            updated_at = NOW()
           WHERE id = $1
+            AND status <> 'success'
           `,
           [payment.id]
         );
 
-        return res.status(400).json({
+        return res.status(409).json({
           success: false,
           message:
-            "Payment reference mismatch.",
+            "Payment details need manual review. If you were charged, do not pay again. Contact GoldMart support with your reference.",
         });
       }
 
-      // -------------------------------------------------
-      // VERIFY CURRENCY
-      // -------------------------------------------------
+      // =================================================
+      // CHECK PAYSTACK TRANSACTION STATUS
+      // =================================================
 
-      const verifiedCurrency =
-        normalizeCurrency(
-          transaction.currency
-        );
+      const providerStatus = String(
+        transaction.status || ""
+      ).toLowerCase();
 
-      if (
-        verifiedCurrency !== "NGN"
-      ) {
+      if (providerStatus !== "success") {
         await pool.query(
           `
           UPDATE payments
           SET
-            status = 'currency_mismatch',
-            updated_at = CURRENT_TIMESTAMP
-          WHERE id = $1
+            status = $1,
+            updated_at = NOW()
+          WHERE id = $2
+            AND status <> 'success'
           `,
-          [payment.id]
+          [
+            providerStatus === "failed"
+              ? "failed"
+              : "pending",
+            payment.id,
+          ]
         );
 
-        return res.status(400).json({
+        return res.status(409).json({
           success: false,
           message:
-            "Payment currency mismatch.",
+            providerStatus === "failed"
+              ? "Payment was not completed."
+              : "Payment is still pending confirmation. Do not make another payment yet.",
         });
       }
 
-      // -------------------------------------------------
-      // VERIFY AMOUNT
-      // -------------------------------------------------
-
-      const verifiedAmountNGN =
-        Number(transaction.amount) / 100;
-
-      const expectedAmountNGN =
-        Number(payment.amount);
-
-      if (
-        !Number.isFinite(
-          verifiedAmountNGN
-        ) ||
-        Math.abs(
-          verifiedAmountNGN -
-            expectedAmountNGN
-        ) > 0.01
-      ) {
-        await pool.query(
-          `
-          UPDATE payments
-          SET
-            status = 'amount_mismatch',
-            updated_at = CURRENT_TIMESTAMP
-          WHERE id = $1
-          `,
-          [payment.id]
-        );
-
-        return res.status(400).json({
-          success: false,
-
-          message:
-            "Payment amount does not match the expected amount.",
-
-          details: {
-            expected_ngn:
-              expectedAmountNGN,
-
-            received_ngn:
-              verifiedAmountNGN,
-          },
-        });
-      }
-
-      // -------------------------------------------------
-      // VERIFY STATUS
-      // -------------------------------------------------
-
-      const paymentStatus =
-        String(
-          transaction.status || ""
-        ).toLowerCase() === "success"
-          ? "success"
-          : "failed";
+      // =================================================
+      // MARK VERIFIED PAYMENT SUCCESSFUL
+      // =================================================
 
       await pool.query(
         `
         UPDATE payments
         SET
-          status = $1,
-          updated_at = CURRENT_TIMESTAMP
-        WHERE id = $2
+          status = 'success',
+          updated_at = NOW()
+        WHERE id = $1
         `,
-        [
-          paymentStatus,
-          payment.id,
-        ]
+        [payment.id]
       );
-
-      if (
-        paymentStatus !== "success"
-      ) {
-        return res.status(400).json({
-          success: false,
-
-          message:
-            "Payment was not successful.",
-
-          payment: {
-            reference,
-
-            status:
-              paymentStatus,
-
-            amount_ngn:
-              verifiedAmountNGN,
-
-            currency:
-              verifiedCurrency,
-          },
-        });
-      }
-
-      // -------------------------------------------------
-      // SUCCESS
-      // -------------------------------------------------
 
       return res.json({
         success: true,
-
         message:
           "Payment verified successfully.",
-
         payment: {
-          id: payment.id,
-
-          user_id:
-            payment.user_id,
-
-          order_id:
-            payment.order_id,
-
           reference,
-
           status: "success",
-
-          amount_ngn:
-            verifiedAmountNGN,
-
-          currency:
-            verifiedCurrency,
-
-          amount_usd:
-            Number(
-              (
-                verifiedAmountNGN /
-                USD_TO_NGN_RATE
-              ).toFixed(2)
-            ),
-
-          exchange_rate:
-            USD_TO_NGN_RATE,
-
-          gateway_response:
-            transaction.gateway_response,
-
-          paid_at:
-            transaction.paid_at,
-
-          channel:
-            transaction.channel,
+          order_id: payment.order_id,
+          amount_ngn: Number(payment.amount),
+          currency: "NGN",
         },
       });
     } catch (error) {
       console.error(
         "Payment verification error:",
-        error
+        error.message
       );
 
-      return res.status(500).json({
+      res.status(error.httpStatus || 500).json({
         success: false,
         message:
-          "Failed to verify payment.",
+          "Payment verification is temporarily unavailable. If you were charged, do not pay again; retry confirmation later.",
       });
     }
   }
 );
 
 // =====================================================
-// GET PAYMENT
+// GET A PAYMENT
 // =====================================================
 
 router.get(
@@ -658,69 +681,51 @@ router.get(
   protect,
   async (req, res) => {
     try {
-      const reference =
-        String(
-          req.params.reference || ""
-        ).trim();
+      const result = await pool.query(
+        `
+        SELECT
+          id,
+          order_id,
+          reference,
+          amount,
+          currency,
+          status,
+          payment_method,
+          created_at,
+          updated_at
+        FROM payments
+        WHERE reference = $1
+          AND user_id = $2
+        LIMIT 1
+        `,
+        [
+          String(
+            req.params.reference || ""
+          ).trim(),
+          req.user.id,
+        ]
+      );
 
-      if (!reference) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "Payment reference is required.",
-        });
-      }
-
-      const result =
-        await pool.query(
-          `
-          SELECT
-            id,
-            order_id,
-            user_id,
-            reference,
-            amount,
-            currency,
-            status,
-            payment_method,
-            created_at,
-            updated_at
-          FROM payments
-          WHERE reference = $1
-            AND user_id = $2
-          LIMIT 1
-          `,
-          [
-            reference,
-            req.user.id,
-          ]
-        );
-
-      if (
-        result.rows.length === 0
-      ) {
+      if (!result.rows.length) {
         return res.status(404).json({
           success: false,
-          message:
-            "Payment not found.",
+          message: "Payment not found.",
         });
       }
 
       return res.json({
         success: true,
-        payment:
-          result.rows[0],
+        payment: result.rows[0],
       });
     } catch (error) {
       console.error(
         "Get payment error:",
-        error
+        error.message
       );
 
-      return res.status(500).json({
+      res.status(500).json({
         success: false,
-        message:
-          "Failed to fetch payment.",
+        message: "Unable to fetch payment.",
       });
     }
   }
