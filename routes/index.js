@@ -11,11 +11,15 @@ const sellerRoutes = require("./seller");
 const reviewRoutes = require("./reviews");
 const notificationRoutes = require("./notifications");
 
-// New buyer protection routes
+// Buyer Protection
 const orderProtectionRoutes = require("./orderProtection");
+
+// Admin Refund Management
+const adminRefundRoutes = require("./adminRefunds");
 
 const router = express.Router();
 
+// Existing GoldMart routes
 router.use("/auth", authRoutes);
 router.use("/categories", categoryRoutes);
 router.use("/products", productRoutes);
@@ -26,7 +30,10 @@ router.use("/seller", sellerRoutes);
 router.use("/reviews", reviewRoutes);
 router.use("/notifications", notificationRoutes);
 
-// Cancellation, refund requests and delivery confirmation
+// Buyer cancellation, refunds and delivery confirmation
 router.use("/order-protection", orderProtectionRoutes);
+
+// Admin-only refund management
+router.use("/admin/refunds", adminRefundRoutes);
 
 module.exports = router;
