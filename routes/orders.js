@@ -1,11 +1,18 @@
+
 const express = require("express");
 const pool = require("../db");
 const { protect } = require("../middleware/auth");
 
 const router = express.Router();
 
+function validId(value) {
+  const id = Number(value);
+  return Number.isSafeInteger(id) && id > 0 ? id : null;
+}
+
 // =====================================================
-// CREATE ORDER AFTER VERIFIED PAYMENT
+// CREATE AN ORDER FROM A VERIFIED PAYMENT SNAPSHOT
+// POST /api/orders
 // =====================================================
 
 router.post("/", protect, async (req, res) => {
@@ -27,13 +34,10 @@ router.post("/", protect, async (req, res) => {
     await client.query("BEGIN");
     inTransaction = true;
 
-    // Get and lock the payment record.
     const paymentResult = await client.query(
       `
-      SELECT
-        id, user_id, order_id, reference,
-        amount, currency, status,
-        checkout_snapshot
+      SELECT id, user_id, order_id, reference,
+             amount, currency, status, checkout_snapshot
       FROM payments
       WHERE reference = $1 AND user_id = $2
       FOR UPDATE
@@ -47,20 +51,18 @@ router.post("/", protect, async (req, res) => {
 
       return res.status(404).json({
         success: false,
-        message:
-          "Payment was not found for this account.",
+        message: "Payment was not found for this account.",
       });
     }
 
     const payment = paymentResult.rows[0];
 
-    // Prevent duplicate orders.
+    // PREVENT DUPLICATE ORDERS
+
     if (payment.order_id) {
       const existing = await client.query(
         `
-        SELECT
-          id, user_id, total_amount,
-          status, created_at
+        SELECT id, user_id, total_amount, status, created_at
         FROM orders
         WHERE id = $1 AND user_id = $2
         `,
@@ -85,7 +87,8 @@ router.post("/", protect, async (req, res) => {
       });
     }
 
-    // Verify payment status.
+    // PAYMENT MUST BE VERIFIED
+
     if (payment.status !== "success") {
       await client.query("ROLLBACK");
       inTransaction = false;
@@ -97,7 +100,8 @@ router.post("/", protect, async (req, res) => {
       });
     }
 
-    // Retrieve the original checkout snapshot.
+    // LOAD ORIGINAL CHECKOUT DETAILS
+
     const snapshot = payment.checkout_snapshot;
 
     if (
@@ -112,7 +116,7 @@ router.post("/", protect, async (req, res) => {
       return res.status(409).json({
         success: false,
         message:
-          "This earlier payment needs reconciliation. If you were charged, do not pay again; contact support with the transaction reference.",
+          "This earlier payment needs reconciliation. If you were charged, do not pay again; contact support with your reference.",
       });
     }
 
@@ -154,9 +158,9 @@ router.post("/", protect, async (req, res) => {
       });
     }
 
-    // Validate purchased items.
-    let computedMinor = 0;
+    // VALIDATE ALL ORDER ITEMS
 
+    let computedMinor = 0;
     const items = [];
     const ids = new Set();
 
@@ -183,8 +187,7 @@ router.post("/", protect, async (req, res) => {
 
       ids.add(id);
 
-      computedMinor +=
-        quantity * unitPriceMinor;
+      computedMinor += quantity * unitPriceMinor;
 
       items.push({
         id,
@@ -203,7 +206,8 @@ router.post("/", protect, async (req, res) => {
       );
     }
 
-    // Lock product rows and check stock.
+    // CHECK STOCK BEFORE CREATING ORDER
+
     for (
       const item of [...items].sort(
         (a, b) => a.id - b.id
@@ -249,24 +253,31 @@ router.post("/", protect, async (req, res) => {
       }
     }
 
-    // Retrieve saved delivery details.
+    // SAVE DELIVERY INFORMATION
+
     const delivery =
       snapshot.delivery &&
       typeof snapshot.delivery === "object"
         ? snapshot.delivery
         : {};
 
-    // Create order.
+    // CREATE THE ORDER
+
     const orderResult = await client.query(
       `
       INSERT INTO orders (
-        user_id, total_amount,
-        status, delivery
+        user_id,
+        total_amount,
+        status,
+        delivery
       )
       VALUES ($1, $2, 'processing', $3::jsonb)
       RETURNING
-        id, user_id, total_amount,
-        status, created_at
+        id,
+        user_id,
+        total_amount,
+        status,
+        created_at
       `,
       [
         req.user.id,
@@ -277,13 +288,16 @@ router.post("/", protect, async (req, res) => {
 
     const order = orderResult.rows[0];
 
-    // Save order items and reduce stock.
+    // CREATE ORDER ITEMS AND REDUCE STOCK
+
     for (const item of items) {
       await client.query(
         `
         INSERT INTO order_items (
-          order_id, product_id,
-          quantity, price
+          order_id,
+          product_id,
+          quantity,
+          price
         )
         VALUES ($1, $2, $3, $4)
         `,
@@ -305,7 +319,8 @@ router.post("/", protect, async (req, res) => {
       );
     }
 
-    // Link payment to order.
+    // CONNECT PAYMENT TO ORDER
+
     await client.query(
       `
       UPDATE payments
@@ -316,12 +331,16 @@ router.post("/", protect, async (req, res) => {
       [order.id, payment.id]
     );
 
-    // Notify buyer.
+    // NOTIFY BUYER
+
     await client.query(
       `
       INSERT INTO notifications (
-        user_id, title, message,
-        type, is_read
+        user_id,
+        title,
+        message,
+        type,
+        is_read
       )
       VALUES ($1, $2, $3, 'order', FALSE)
       `,
@@ -332,7 +351,8 @@ router.post("/", protect, async (req, res) => {
       ]
     );
 
-    // Notify sellers.
+    // NOTIFY SELLERS
+
     const sellers = [
       ...new Set(
         items
@@ -349,12 +369,18 @@ router.post("/", protect, async (req, res) => {
       await client.query(
         `
         INSERT INTO notifications (
-          user_id, title, message,
-          type, is_read
+          user_id,
+          title,
+          message,
+          type,
+          is_read
         )
         VALUES (
-          $1, 'New order received',
-          $2, 'seller', FALSE
+          $1,
+          'New order received',
+          $2,
+          'seller',
+          FALSE
         )
         `,
         [
@@ -364,7 +390,8 @@ router.post("/", protect, async (req, res) => {
       );
     }
 
-    // Remove purchased items from the cart.
+    // REMOVE PURCHASED CART ITEMS
+
     for (const item of items) {
       await client.query(
         `
@@ -427,9 +454,10 @@ router.post("/", protect, async (req, res) => {
   }
 });
 
-  // =====================================================
-  // GET LOGGED-IN BUYER'S ORDERS
-  // =====================================================
+// =====================================================
+// GET LOGGED-IN BUYER'S ORDERS
+// GET /api/orders
+// =====================================================
 
 router.get("/", protect, async (req, res) => {
   try {
@@ -495,6 +523,7 @@ router.get("/", protect, async (req, res) => {
 
 // =====================================================
 // GET SELLER'S CUSTOMER ORDERS
+// GET /api/orders/seller/all
 // =====================================================
 
 router.get(
@@ -585,50 +614,63 @@ router.get(
 
 // =====================================================
 // UPDATE SELLER ORDER STATUS
+// PROTECT AGAINST CANCELLATION / REFUND REQUESTS
+// PUT /api/orders/seller/:orderId/status
 // =====================================================
 
 router.put(
   "/seller/:orderId/status",
   protect,
   async (req, res) => {
-    const orderId = Number(req.params.orderId);
-    const sellerId = Number(req.user.id);
+    const orderId = validId(
+      req.params.orderId
+    );
+
+    const sellerId = validId(
+      req.user?.id
+    );
 
     const status = String(
       req.body?.status || ""
-    ).toLowerCase();
+    )
+      .trim()
+      .toLowerCase();
 
-    const allowedStatuses = [
-      "pending",
-      "processing",
-      "shipped",
-      "delivered",
-      "cancelled",
-    ];
-
-    if (
-      !Number.isInteger(orderId) ||
-      orderId <= 0
-    ) {
+    if (!orderId || !sellerId) {
       return res.status(400).json({
         success: false,
-        message: "Invalid order ID.",
+        message:
+          "Valid order and account are required.",
       });
     }
 
-    if (!allowedStatuses.includes(status)) {
+    // Sellers cannot approve refunds
+    // by changing an order status.
+
+    if (
+      ![
+        "processing",
+        "shipped",
+        "delivered",
+      ].includes(status)
+    ) {
       return res.status(400).json({
         success: false,
-        message: "Invalid order status.",
+        message:
+          "Sellers can only progress an order to Processing, Shipped, or Delivered. Cancellations must use buyer protection and admin review.",
       });
     }
 
     const client = await pool.connect();
+    let inTransaction = false;
 
     try {
       await client.query("BEGIN");
+      inTransaction = true;
 
-      // Lock the order while verifying seller access.
+      // Lock the order to prevent
+      // simultaneous updates.
+
       const orderResult = await client.query(
         `
         SELECT
@@ -644,6 +686,7 @@ router.put(
 
       if (!orderResult.rows.length) {
         await client.query("ROLLBACK");
+        inTransaction = false;
 
         return res.status(404).json({
           success: false,
@@ -651,26 +694,35 @@ router.put(
         });
       }
 
-      const ownershipResult = await client.query(
-        `
-        SELECT DISTINCT
-          p.seller_id
-        FROM order_items oi
+      // Confirm that this seller
+      // owns the products in this order.
 
-        INNER JOIN products p
-          ON p.id = oi.product_id
+      const ownershipResult =
+        await client.query(
+          `
+          SELECT DISTINCT p.seller_id
+          FROM order_items oi
+          JOIN products p
+            ON p.id = oi.product_id
+          WHERE oi.order_id = $1
+          `,
+          [orderId]
+        );
 
-        WHERE oi.order_id = $1
-        `,
-        [orderId]
-      );
-
-      const sellerIds = ownershipResult.rows.map(
-        (row) => Number(row.seller_id)
-      );
+      const sellerIds =
+        ownershipResult.rows
+          .map((row) =>
+            Number(row.seller_id)
+          )
+          .filter(
+            (id) =>
+              Number.isSafeInteger(id) &&
+              id > 0
+          );
 
       if (!sellerIds.includes(sellerId)) {
         await client.query("ROLLBACK");
+        inTransaction = false;
 
         return res.status(403).json({
           success: false,
@@ -679,87 +731,170 @@ router.put(
         });
       }
 
-      // The current database uses one status per order.
-      // Prevent one seller from changing the status
-      // of an order involving multiple sellers.
-      if (sellerIds.length !== 1) {
+      // One order can contain several
+      // sellers, but each needs separate
+      // fulfilment tracking.
+
+      if (
+        ownershipResult.rows.length !== 1 ||
+        sellerIds.length !== 1
+      ) {
         await client.query("ROLLBACK");
+        inTransaction = false;
 
         return res.status(409).json({
           success: false,
           message:
-            "Multi-seller orders require separate seller fulfillment tracking.",
+            "Multi-seller orders need separate seller fulfillment tracking.",
+        });
+      }
+
+      // =================================================
+      // IMPORTANT: BLOCK ACTIVE REFUND REQUESTS
+      // =================================================
+
+      const protectionResult =
+        await client.query(
+          `
+          SELECT
+            id,
+            status
+          FROM goldmart_refund_requests
+          WHERE order_id = $1
+            AND status <> 'rejected'
+          LIMIT 1
+          `,
+          [orderId]
+        );
+
+      if (protectionResult.rows.length) {
+        await client.query("ROLLBACK");
+        inTransaction = false;
+
+        return res.status(409).json({
+          success: false,
+          message:
+            "This order has an active cancellation or refund request. Do not ship or change its status until GoldMart support resolves it.",
+          refund_request_status:
+            protectionResult.rows[0].status,
         });
       }
 
       const currentStatus = String(
         orderResult.rows[0].status || ""
-      ).toLowerCase();
+      )
+        .trim()
+        .toLowerCase();
+
+      // Cannot reopen a cancelled order.
 
       if (currentStatus === "cancelled") {
         await client.query("ROLLBACK");
+        inTransaction = false;
 
         return res.status(409).json({
           success: false,
           message:
-            "A cancelled order cannot be updated.",
+            "A cancelled order cannot be shipped or reopened by a seller.",
+        });
+      }
+
+      // Prevent skipping status steps.
+
+      const allowedNext = {
+        pending: ["processing"],
+        processing: ["shipped"],
+        shipped: ["delivered"],
+        delivered: [],
+      };
+
+      // Avoid duplicate notifications
+      // when status is unchanged.
+
+      if (currentStatus === status) {
+        await client.query("COMMIT");
+        inTransaction = false;
+
+        return res.json({
+          success: true,
+          message:
+            "Order already has this status.",
+          order: {
+            id: orderId,
+            user_id:
+              orderResult.rows[0].user_id,
+            status: currentStatus,
+          },
         });
       }
 
       if (
-        currentStatus === "delivered" &&
-        status !== "delivered"
+        !(
+          allowedNext[currentStatus] || []
+        ).includes(status)
       ) {
         await client.query("ROLLBACK");
+        inTransaction = false;
 
         return res.status(409).json({
           success: false,
           message:
-            "A delivered order cannot be moved backwards.",
+            `Cannot change an order from ${currentStatus} directly to ${status}. Follow Processing → Shipped → Delivered.`,
         });
       }
 
-      const updatedResult = await client.query(
-        `
-        UPDATE orders
-        SET status = $1
-        WHERE id = $2
+      // =================================================
+      // UPDATE THE ORDER
+      // =================================================
 
-        RETURNING
-          id,
-          user_id,
-          total_amount,
-          status,
-          created_at
-        `,
-        [status, orderId]
-      );
-
-      const updatedOrder = updatedResult.rows[0];
-
-      // Notify buyer when status actually changes.
-      if (currentStatus !== status) {
+      const updatedResult =
         await client.query(
           `
-          INSERT INTO notifications (
+          UPDATE orders
+          SET status = $1
+          WHERE id = $2
+
+          RETURNING
+            id,
             user_id,
-            title,
-            message,
-            type,
-            is_read
-          )
-          VALUES ($1, $2, $3, $4, FALSE)
+            total_amount,
+            status,
+            created_at
           `,
-          [
-            updatedOrder.user_id,
-            "Order status updated",
-            `Your GoldMart order #${orderId} is now "${status}".`,
-            "order",
-          ]
+          [status, orderId]
         );
-      }
+
+      const updatedOrder =
+        updatedResult.rows[0];
+
+      // Notify the buyer.
+
+      await client.query(
+        `
+        INSERT INTO notifications (
+          user_id,
+          title,
+          message,
+          type,
+          is_read
+        )
+        VALUES (
+          $1,
+          $2,
+          $3,
+          'order',
+          FALSE
+        )
+        `,
+        [
+          updatedOrder.user_id,
+          "Order status updated",
+          `Your GoldMart order #${orderId} is now "${status}".`,
+        ]
+      );
 
       await client.query("COMMIT");
+      inTransaction = false;
 
       return res.json({
         success: true,
@@ -768,13 +903,15 @@ router.put(
         order: updatedOrder,
       });
     } catch (error) {
-      try {
-        await client.query("ROLLBACK");
-      } catch (rollbackError) {
-        console.error(
-          "Order rollback error:",
-          rollbackError.message
-        );
+      if (inTransaction) {
+        try {
+          await client.query("ROLLBACK");
+        } catch (rollbackError) {
+          console.error(
+            "Order rollback error:",
+            rollbackError.message
+          );
+        }
       }
 
       console.error(
@@ -795,6 +932,7 @@ router.put(
 
 // =====================================================
 // GET ONE BUYER ORDER
+// GET /api/orders/:orderId
 // =====================================================
 
 router.get(
@@ -802,12 +940,11 @@ router.get(
   protect,
   async (req, res) => {
     try {
-      const orderId = Number(req.params.orderId);
+      const orderId = validId(
+        req.params.orderId
+      );
 
-      if (
-        !Number.isInteger(orderId) ||
-        orderId <= 0
-      ) {
+      if (!orderId) {
         return res.status(400).json({
           success: false,
           message: "Invalid order ID.",
