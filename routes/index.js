@@ -17,6 +17,11 @@ const orderProtectionRoutes = require("./orderProtection");
 // Admin Refund Management
 const adminRefundRoutes = require("./adminRefunds");
 
+// Paystack Refund Processing
+const adminRefundProcessingRoutes = require(
+  "./adminRefundProcessing"
+);
+
 const router = express.Router();
 
 // Existing GoldMart routes
@@ -30,10 +35,22 @@ router.use("/seller", sellerRoutes);
 router.use("/reviews", reviewRoutes);
 router.use("/notifications", notificationRoutes);
 
-// Buyer cancellation, refunds and delivery confirmation
-router.use("/order-protection", orderProtectionRoutes);
+// Buyer Protection
+router.use(
+  "/order-protection",
+  orderProtectionRoutes
+);
 
-// Admin-only refund management
-router.use("/admin/refunds", adminRefundRoutes);
+// Admin Refund Reviews
+router.use(
+  "/admin/refunds",
+  adminRefundRoutes
+);
+
+// Paystack Refund Processing
+router.use(
+  "/admin/refund-processing",
+  adminRefundProcessingRoutes
+);
 
 module.exports = router;
