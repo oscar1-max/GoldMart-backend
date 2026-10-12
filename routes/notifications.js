@@ -1,3 +1,4 @@
+
 const express = require("express");
 const pool = require("../db");
 const { protect } = require("../middleware/auth");
@@ -5,58 +6,76 @@ const { protect } = require("../middleware/auth");
 const router = express.Router();
 
 // =====================================================
-// HELPER
+// HELPERS
 // =====================================================
 
+function validId(value) {
+  const id = Number(value);
+
+  return Number.isSafeInteger(id) && id > 0
+    ? id
+    : null;
+}
+
 function getCurrentUserId(req) {
-  if (req.user && req.user.id) {
-    return Number(req.user.id);
-  }
+  return validId(req.user?.id ?? req.user?.userId);
+}
 
-  if (req.user && req.user.userId) {
-    return Number(req.user.userId);
-  }
-
-  return null;
+function unauthorized(res) {
+  return res.status(401).json({
+    success: false,
+    message: "Authentication required",
+  });
 }
 
 // =====================================================
-// GET CURRENT USER NOTIFICATIONS
-// GET /api/notifications
+// GET LOGGED-IN USER'S NOTIFICATIONS
 // =====================================================
+
+async function getNotifications(userId, res) {
+  const result = await pool.query(
+    `
+    SELECT
+      n.id,
+      n.user_id,
+      n.title,
+      n.message,
+      n.type,
+      n.is_read,
+      n.created_at,
+
+      CASE
+        WHEN c.buyer_id = $1
+          OR c.seller_id = $1
+        THEN n.conversation_id
+        ELSE NULL
+      END AS conversation_id
+
+    FROM notifications n
+
+    LEFT JOIN conversations c
+      ON c.id = n.conversation_id
+
+    WHERE n.user_id = $1
+
+    ORDER BY n.created_at DESC, n.id DESC
+    `,
+    [userId]
+  );
+
+  return res.json({
+    success: true,
+    notifications: result.rows,
+  });
+}
 
 router.get("/", protect, async (req, res) => {
   try {
     const userId = getCurrentUserId(req);
 
-    if (!userId) {
-      return res.status(401).json({
-        success: false,
-        message: "Authentication required",
-      });
-    }
+    if (!userId) return unauthorized(res);
 
-    const result = await pool.query(
-      `
-      SELECT
-        id,
-        user_id,
-        title,
-        message,
-        type,
-        is_read,
-        created_at
-      FROM notifications
-      WHERE user_id = $1
-      ORDER BY created_at DESC
-      `,
-      [userId]
-    );
-
-    return res.json({
-      success: true,
-      notifications: result.rows,
-    });
+    return await getNotifications(userId, res);
   } catch (error) {
     console.error("Get notifications error:", error);
 
@@ -68,65 +87,73 @@ router.get("/", protect, async (req, res) => {
 });
 
 // =====================================================
-// BACKWARD-COMPATIBLE GET USER NOTIFICATIONS
+// UNREAD NOTIFICATION COUNT
+// =====================================================
+
+async function getUnreadCount(userId, res) {
+  const result = await pool.query(
+    `
+    SELECT COUNT(*) AS count
+    FROM notifications
+    WHERE user_id = $1
+      AND is_read = FALSE
+    `,
+    [userId]
+  );
+
+  return res.json({
+    success: true,
+    count: Number(result.rows[0]?.count || 0),
+  });
+}
+
+// IMPORTANT: Keep this route before GET /:userId.
+router.get("/unread-count", protect, async (req, res) => {
+  try {
+    const userId = getCurrentUserId(req);
+
+    if (!userId) return unauthorized(res);
+
+    return await getUnreadCount(userId, res);
+  } catch (error) {
+    console.error("Unread count error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to get unread notification count",
+    });
+  }
+});
+
+// =====================================================
+// OLD GET NOTIFICATIONS URL
 // GET /api/notifications/:userId
-//
-// Still supports the old frontend URL, but only allows
-// the currently authenticated user to access their own.
 // =====================================================
 
 router.get("/:userId", protect, async (req, res) => {
   try {
     const currentUserId = getCurrentUserId(req);
-    const requestedUserId = Number(req.params.userId);
+    const requestedUserId = validId(req.params.userId);
 
-    if (!currentUserId) {
-      return res.status(401).json({
-        success: false,
-        message: "Authentication required",
-      });
-    }
+    if (!currentUserId) return unauthorized(res);
 
-    if (
-      !Number.isInteger(requestedUserId) ||
-      requestedUserId <= 0
-    ) {
+    if (!requestedUserId) {
       return res.status(400).json({
         success: false,
         message: "Invalid user ID",
       });
     }
 
-    if (Number(currentUserId) !== Number(requestedUserId)) {
+    if (currentUserId !== requestedUserId) {
       return res.status(403).json({
         success: false,
         message: "You can only access your own notifications",
       });
     }
 
-    const result = await pool.query(
-      `
-      SELECT
-        id,
-        user_id,
-        title,
-        message,
-        type,
-        is_read,
-        created_at
-      FROM notifications
-      WHERE user_id = $1
-      ORDER BY created_at DESC
-      `,
-      [requestedUserId]
-    );
-
-    return res.json({
-      success: true,
-      notifications: result.rows,
-    });
+    return await getNotifications(currentUserId, res);
   } catch (error) {
-    console.error("Get notifications error:", error);
+    console.error("Old notifications route error:", error);
 
     return res.status(500).json({
       success: false,
@@ -134,54 +161,6 @@ router.get("/:userId", protect, async (req, res) => {
     });
   }
 });
-
-// =====================================================
-// GET UNREAD NOTIFICATION COUNT
-// GET /api/notifications/unread-count
-// =====================================================
-
-router.get(
-  "/unread-count",
-  protect,
-  async (req, res) => {
-    try {
-      const userId = getCurrentUserId(req);
-
-      if (!userId) {
-        return res.status(401).json({
-          success: false,
-          message: "Authentication required",
-        });
-      }
-
-      const result = await pool.query(
-        `
-        SELECT COUNT(*) AS count
-        FROM notifications
-        WHERE user_id = $1
-        AND is_read = FALSE
-        `,
-        [userId]
-      );
-
-      return res.json({
-        success: true,
-        count: Number(result.rows[0].count),
-      });
-    } catch (error) {
-      console.error(
-        "Unread notification count error:",
-        error
-      );
-
-      return res.status(500).json({
-        success: false,
-        message:
-          "Failed to get unread notification count",
-      });
-    }
-  }
-);
 
 // =====================================================
 // OLD UNREAD COUNT URL
@@ -194,59 +173,31 @@ router.get(
   async (req, res) => {
     try {
       const currentUserId = getCurrentUserId(req);
-      const requestedUserId = Number(req.params.userId);
+      const requestedUserId = validId(req.params.userId);
 
-      if (!currentUserId) {
-        return res.status(401).json({
-          success: false,
-          message: "Authentication required",
-        });
-      }
+      if (!currentUserId) return unauthorized(res);
 
-      if (
-        !Number.isInteger(requestedUserId) ||
-        requestedUserId <= 0
-      ) {
+      if (!requestedUserId) {
         return res.status(400).json({
           success: false,
           message: "Invalid user ID",
         });
       }
 
-      if (
-        Number(currentUserId) !==
-        Number(requestedUserId)
-      ) {
+      if (currentUserId !== requestedUserId) {
         return res.status(403).json({
           success: false,
           message: "Access denied",
         });
       }
 
-      const result = await pool.query(
-        `
-        SELECT COUNT(*) AS count
-        FROM notifications
-        WHERE user_id = $1
-        AND is_read = FALSE
-        `,
-        [requestedUserId]
-      );
-
-      return res.json({
-        success: true,
-        count: Number(result.rows[0].count),
-      });
+      return await getUnreadCount(currentUserId, res);
     } catch (error) {
-      console.error(
-        "Unread notification count error:",
-        error
-      );
+      console.error("Old unread count error:", error);
 
       return res.status(500).json({
         success: false,
-        message:
-          "Failed to get unread notification count",
+        message: "Failed to get unread notification count",
       });
     }
   }
@@ -254,7 +205,6 @@ router.get(
 
 // =====================================================
 // MARK ONE NOTIFICATION AS READ
-// PATCH /api/notifications/:notificationId/read
 // =====================================================
 
 router.patch(
@@ -263,21 +213,13 @@ router.patch(
   async (req, res) => {
     try {
       const userId = getCurrentUserId(req);
-      const notificationId = Number(
+      const notificationId = validId(
         req.params.notificationId
       );
 
-      if (!userId) {
-        return res.status(401).json({
-          success: false,
-          message: "Authentication required",
-        });
-      }
+      if (!userId) return unauthorized(res);
 
-      if (
-        !Number.isInteger(notificationId) ||
-        notificationId <= 0
-      ) {
+      if (!notificationId) {
         return res.status(400).json({
           success: false,
           message: "Invalid notification ID",
@@ -289,13 +231,13 @@ router.patch(
         UPDATE notifications
         SET is_read = TRUE
         WHERE id = $1
-        AND user_id = $2
+          AND user_id = $2
         RETURNING *
         `,
         [notificationId, userId]
       );
 
-      if (result.rows.length === 0) {
+      if (!result.rows.length) {
         return res.status(404).json({
           success: false,
           message: "Notification not found",
@@ -308,15 +250,11 @@ router.patch(
         notification: result.rows[0],
       });
     } catch (error) {
-      console.error(
-        "Mark notification read error:",
-        error
-      );
+      console.error("Mark read error:", error);
 
       return res.status(500).json({
         success: false,
-        message:
-          "Failed to mark notification as read",
+        message: "Failed to mark notification as read",
       });
     }
   }
@@ -324,7 +262,6 @@ router.patch(
 
 // =====================================================
 // MARK ONE NOTIFICATION AS UNREAD
-// PATCH /api/notifications/:notificationId/unread
 // =====================================================
 
 router.patch(
@@ -333,21 +270,13 @@ router.patch(
   async (req, res) => {
     try {
       const userId = getCurrentUserId(req);
-      const notificationId = Number(
+      const notificationId = validId(
         req.params.notificationId
       );
 
-      if (!userId) {
-        return res.status(401).json({
-          success: false,
-          message: "Authentication required",
-        });
-      }
+      if (!userId) return unauthorized(res);
 
-      if (
-        !Number.isInteger(notificationId) ||
-        notificationId <= 0
-      ) {
+      if (!notificationId) {
         return res.status(400).json({
           success: false,
           message: "Invalid notification ID",
@@ -359,13 +288,13 @@ router.patch(
         UPDATE notifications
         SET is_read = FALSE
         WHERE id = $1
-        AND user_id = $2
+          AND user_id = $2
         RETURNING *
         `,
         [notificationId, userId]
       );
 
-      if (result.rows.length === 0) {
+      if (!result.rows.length) {
         return res.status(404).json({
           success: false,
           message: "Notification not found",
@@ -378,15 +307,11 @@ router.patch(
         notification: result.rows[0],
       });
     } catch (error) {
-      console.error(
-        "Mark notification unread error:",
-        error
-      );
+      console.error("Mark unread error:", error);
 
       return res.status(500).json({
         success: false,
-        message:
-          "Failed to mark notification as unread",
+        message: "Failed to mark notification as unread",
       });
     }
   }
@@ -394,54 +319,43 @@ router.patch(
 
 // =====================================================
 // MARK ALL NOTIFICATIONS AS READ
-// PATCH /api/notifications/read-all
 // =====================================================
 
-router.patch(
-  "/read-all",
-  protect,
-  async (req, res) => {
-    try {
-      const userId = getCurrentUserId(req);
+async function markAllRead(userId, res) {
+  await pool.query(
+    `
+    UPDATE notifications
+    SET is_read = TRUE
+    WHERE user_id = $1
+    `,
+    [userId]
+  );
 
-      if (!userId) {
-        return res.status(401).json({
-          success: false,
-          message: "Authentication required",
-        });
-      }
+  return res.json({
+    success: true,
+    message: "All notifications marked as read",
+  });
+}
 
-      await pool.query(
-        `
-        UPDATE notifications
-        SET is_read = TRUE
-        WHERE user_id = $1
-        `,
-        [userId]
-      );
+router.patch("/read-all", protect, async (req, res) => {
+  try {
+    const userId = getCurrentUserId(req);
 
-      return res.json({
-        success: true,
-        message: "All notifications marked as read",
-      });
-    } catch (error) {
-      console.error(
-        "Mark all notifications read error:",
-        error
-      );
+    if (!userId) return unauthorized(res);
 
-      return res.status(500).json({
-        success: false,
-        message:
-          "Failed to mark notifications as read",
-      });
-    }
+    return await markAllRead(userId, res);
+  } catch (error) {
+    console.error("Mark all read error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to mark all notifications as read",
+    });
   }
-);
+});
 
 // =====================================================
-// OLD MARK-ALL URL
-// PATCH /api/notifications/:userId/read-all
+// OLD MARK ALL AS READ URL
 // =====================================================
 
 router.patch(
@@ -450,58 +364,31 @@ router.patch(
   async (req, res) => {
     try {
       const currentUserId = getCurrentUserId(req);
-      const requestedUserId = Number(req.params.userId);
+      const requestedUserId = validId(req.params.userId);
 
-      if (!currentUserId) {
-        return res.status(401).json({
-          success: false,
-          message: "Authentication required",
-        });
-      }
+      if (!currentUserId) return unauthorized(res);
 
-      if (
-        !Number.isInteger(requestedUserId) ||
-        requestedUserId <= 0
-      ) {
+      if (!requestedUserId) {
         return res.status(400).json({
           success: false,
           message: "Invalid user ID",
         });
       }
 
-      if (
-        Number(currentUserId) !==
-        Number(requestedUserId)
-      ) {
+      if (requestedUserId !== currentUserId) {
         return res.status(403).json({
           success: false,
           message: "Access denied",
         });
       }
 
-      await pool.query(
-        `
-        UPDATE notifications
-        SET is_read = TRUE
-        WHERE user_id = $1
-        `,
-        [requestedUserId]
-      );
-
-      return res.json({
-        success: true,
-        message: "All notifications marked as read",
-      });
+      return await markAllRead(currentUserId, res);
     } catch (error) {
-      console.error(
-        "Mark all notifications read error:",
-        error
-      );
+      console.error("Old mark all read error:", error);
 
       return res.status(500).json({
         success: false,
-        message:
-          "Failed to mark notifications as read",
+        message: "Failed to mark all notifications as read",
       });
     }
   }
@@ -509,7 +396,6 @@ router.patch(
 
 // =====================================================
 // DELETE ONE NOTIFICATION
-// DELETE /api/notifications/:notificationId
 // =====================================================
 
 router.delete(
@@ -518,21 +404,13 @@ router.delete(
   async (req, res) => {
     try {
       const userId = getCurrentUserId(req);
-      const notificationId = Number(
+      const notificationId = validId(
         req.params.notificationId
       );
 
-      if (!userId) {
-        return res.status(401).json({
-          success: false,
-          message: "Authentication required",
-        });
-      }
+      if (!userId) return unauthorized(res);
 
-      if (
-        !Number.isInteger(notificationId) ||
-        notificationId <= 0
-      ) {
+      if (!notificationId) {
         return res.status(400).json({
           success: false,
           message: "Invalid notification ID",
@@ -543,13 +421,13 @@ router.delete(
         `
         DELETE FROM notifications
         WHERE id = $1
-        AND user_id = $2
+          AND user_id = $2
         RETURNING id
         `,
         [notificationId, userId]
       );
 
-      if (result.rows.length === 0) {
+      if (!result.rows.length) {
         return res.status(404).json({
           success: false,
           message: "Notification not found",
@@ -561,10 +439,7 @@ router.delete(
         message: "Notification deleted",
       });
     } catch (error) {
-      console.error(
-        "Delete notification error:",
-        error
-      );
+      console.error("Delete notification error:", error);
 
       return res.status(500).json({
         success: false,
