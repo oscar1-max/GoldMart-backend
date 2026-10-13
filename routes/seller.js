@@ -1,3 +1,4 @@
+
 const express = require("express");
 const pool = require("../db");
 const { protect, authorize } = require("../middleware/auth");
@@ -9,6 +10,7 @@ const ALLOWED_CURRENCIES = ["USD", "NGN", "EUR", "GBP"];
 // =====================================================
 // SELLER DASHBOARD STATS
 // =====================================================
+
 router.get(
   "/stats",
   protect,
@@ -78,6 +80,7 @@ router.get(
 // =====================================================
 // GET ALL SELLER PRODUCTS
 // =====================================================
+
 router.get(
   "/products",
   protect,
@@ -116,6 +119,7 @@ router.get(
 // =====================================================
 // GET ONE SELLER PRODUCT
 // =====================================================
+
 router.get(
   "/products/:id",
   protect,
@@ -158,7 +162,8 @@ router.get(
       if (result.rows.length === 0) {
         return res.status(404).json({
           success: false,
-          message: "Product not found or you do not own this product",
+          message:
+            "Product not found or you do not own this product",
         });
       }
 
@@ -180,6 +185,7 @@ router.get(
 // =====================================================
 // ADD SELLER PRODUCT
 // =====================================================
+
 router.post(
   "/products",
   protect,
@@ -207,24 +213,34 @@ router.post(
       const numericStock = Number(stock);
       const productCurrency = String(currency).toUpperCase();
 
-      if (!Number.isFinite(numericPrice) || numericPrice < 0) {
+      if (
+        !Number.isFinite(numericPrice) ||
+        numericPrice < 0
+      ) {
         return res.status(400).json({
           success: false,
           message: "Invalid product price",
         });
       }
 
-      if (!ALLOWED_CURRENCIES.includes(productCurrency)) {
+      if (
+        !ALLOWED_CURRENCIES.includes(productCurrency)
+      ) {
         return res.status(400).json({
           success: false,
-          message: "Invalid currency. Use USD, NGN, EUR or GBP.",
+          message:
+            "Invalid currency. Use USD, NGN, EUR or GBP.",
         });
       }
 
-      if (!Number.isInteger(numericStock) || numericStock < 0) {
+      if (
+        !Number.isInteger(numericStock) ||
+        numericStock < 0
+      ) {
         return res.status(400).json({
           success: false,
-          message: "Stock must be a non-negative whole number",
+          message:
+            "Stock must be a non-negative whole number",
         });
       }
 
@@ -263,11 +279,15 @@ router.post(
         product: result.rows[0],
       });
     } catch (error) {
-      console.error("Create seller product error:", error);
+      console.error(
+        "Create seller product error:",
+        error
+      );
 
       res.status(500).json({
         success: false,
-        message: error.message || "Failed to create product",
+        message:
+          error.message || "Failed to create product",
       });
     }
   }
@@ -276,6 +296,7 @@ router.post(
 // =====================================================
 // UPDATE SELLER PRODUCT
 // =====================================================
+
 router.put(
   "/products/:id",
   protect,
@@ -294,10 +315,15 @@ router.put(
         stock,
       } = req.body;
 
-      if (!name || price === undefined || stock === undefined) {
+      if (
+        !name ||
+        price === undefined ||
+        stock === undefined
+      ) {
         return res.status(400).json({
           success: false,
-          message: "Product name, price and stock are required",
+          message:
+            "Product name, price and stock are required",
         });
       }
 
@@ -305,24 +331,34 @@ router.put(
       const numericStock = Number(stock);
       const productCurrency = String(currency).toUpperCase();
 
-      if (!Number.isFinite(numericPrice) || numericPrice < 0) {
+      if (
+        !Number.isFinite(numericPrice) ||
+        numericPrice < 0
+      ) {
         return res.status(400).json({
           success: false,
           message: "Invalid product price",
         });
       }
 
-      if (!ALLOWED_CURRENCIES.includes(productCurrency)) {
+      if (
+        !ALLOWED_CURRENCIES.includes(productCurrency)
+      ) {
         return res.status(400).json({
           success: false,
-          message: "Invalid currency. Use USD, NGN, EUR or GBP.",
+          message:
+            "Invalid currency. Use USD, NGN, EUR or GBP.",
         });
       }
 
-      if (!Number.isInteger(numericStock) || numericStock < 0) {
+      if (
+        !Number.isInteger(numericStock) ||
+        numericStock < 0
+      ) {
         return res.status(400).json({
           success: false,
-          message: "Stock must be a non-negative whole number",
+          message:
+            "Stock must be a non-negative whole number",
         });
       }
 
@@ -387,7 +423,8 @@ router.put(
       if (result.rows.length === 0) {
         return res.status(404).json({
           success: false,
-          message: "Product not found or you do not own this product",
+          message:
+            "Product not found or you do not own this product",
         });
       }
 
@@ -397,11 +434,15 @@ router.put(
         product: result.rows[0],
       });
     } catch (error) {
-      console.error("Update seller product error:", error);
+      console.error(
+        "Update seller product error:",
+        error
+      );
 
       res.status(500).json({
         success: false,
-        message: error.message || "Failed to update product",
+        message:
+          error.message || "Failed to update product",
       });
     }
   }
@@ -410,6 +451,7 @@ router.put(
 // =====================================================
 // DELETE SELLER PRODUCT
 // =====================================================
+
 router.delete(
   "/products/:id",
   protect,
@@ -444,7 +486,8 @@ router.delete(
       if (result.rows.length === 0) {
         return res.status(404).json({
           success: false,
-          message: "Product not found or you do not own this product",
+          message:
+            "Product not found or you do not own this product",
         });
       }
 
@@ -454,11 +497,166 @@ router.delete(
         product: result.rows[0],
       });
     } catch (error) {
-      console.error("Delete seller product error:", error);
+      console.error(
+        "Delete seller product error:",
+        error
+      );
 
       res.status(500).json({
         success: false,
-        message: error.message || "Failed to delete product",
+        message:
+          error.message || "Failed to delete product",
+      });
+    }
+  }
+);
+
+// =====================================================
+// SELLER PAYMENT PROTECTION — READ ONLY
+//
+// GET /api/seller/payment-protection?page=1
+// =====================================================
+//
+// Allocations represent recorded order portions.
+// They are NOT money held in escrow.
+// They are NOT withdrawable seller balances.
+//
+// This endpoint cannot approve or transfer funds.
+// =====================================================
+
+router.get(
+  "/payment-protection",
+  protect,
+  authorize("seller", "admin"),
+  async (req, res) => {
+    const sellerId = Number(req.user?.id);
+
+    if (
+      !Number.isSafeInteger(sellerId) ||
+      sellerId <= 0
+    ) {
+      return res.status(401).json({
+        success: false,
+        message: "Valid seller login required",
+      });
+    }
+
+    const requestedPage = Number(
+      req.query.page ?? 1
+    );
+
+    const page =
+      Number.isSafeInteger(requestedPage) &&
+      requestedPage > 0
+        ? Math.min(requestedPage, 100000)
+        : 1;
+
+    const limit = 20;
+    const offset = (page - 1) * limit;
+
+    try {
+      const [
+        allocationsResult,
+        summaryResult,
+        countResult,
+      ] = await Promise.all([
+        pool.query(
+          `
+          SELECT
+            a.id,
+            a.order_id,
+            a.payment_id,
+            a.seller_id,
+            a.currency,
+            a.gross_minor::text AS gross_minor,
+            a.status,
+            a.created_at,
+            a.updated_at,
+            o.status AS order_status,
+            p.status AS payment_status,
+            p.reference AS payment_reference
+          FROM seller_order_allocations a
+          JOIN orders o
+            ON o.id = a.order_id
+          JOIN payments p
+            ON p.id = a.payment_id
+          WHERE a.seller_id = $1
+          ORDER BY a.created_at DESC, a.id DESC
+          LIMIT $2 OFFSET $3
+          `,
+          [sellerId, limit, offset]
+        ),
+
+        pool.query(
+          `
+          SELECT
+            currency,
+            status,
+            COUNT(*)::int AS count,
+            COALESCE(SUM(gross_minor), 0)::text
+              AS gross_minor
+          FROM seller_order_allocations
+          WHERE seller_id = $1
+          GROUP BY currency, status
+          ORDER BY currency, status
+          `,
+          [sellerId]
+        ),
+
+        pool.query(
+          `
+          SELECT COUNT(*)::int AS total
+          FROM seller_order_allocations
+          WHERE seller_id = $1
+          `,
+          [sellerId]
+        ),
+      ]);
+
+      const total =
+        countResult.rows[0]?.total || 0;
+
+      const totalPages =
+        Math.ceil(total / limit);
+
+      return res.json({
+        success: true,
+
+        message:
+          "Recorded seller allocations are for review only. Withdrawals are not enabled.",
+
+        allocations:
+          allocationsResult.rows,
+
+        summary:
+          summaryResult.rows,
+
+        page,
+        limit,
+        total,
+
+        total_pages: totalPages,
+
+        pagination: {
+          page,
+          limit,
+          total,
+          total_pages: totalPages,
+          totalPages,
+          has_next: page < totalPages,
+          has_previous: page > 1,
+        },
+      });
+    } catch (error) {
+      console.error(
+        "Seller payment protection error:",
+        error
+      );
+
+      return res.status(500).json({
+        success: false,
+        message:
+          "Unable to load payment protection. Please try again.",
       });
     }
   }
