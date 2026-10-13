@@ -1,3 +1,4 @@
+
 const express = require("express");
 const cors = require("cors");
 require("dotenv").config();
@@ -11,7 +12,6 @@ const testDatabaseConnection = require("./database");
 const pool = require("./db");
 
 const app = express();
-
 const PORT = process.env.PORT || 4000;
 
 // =====================================================
@@ -46,9 +46,9 @@ app.use(express.json());
 
 async function setupDatabase() {
   try {
-    // -------------------------------------------------
+    // =================================================
     // PRODUCTS CURRENCY
-    // -------------------------------------------------
+    // =================================================
 
     await pool.query(`
       ALTER TABLE products
@@ -62,9 +62,9 @@ async function setupDatabase() {
       WHERE currency IS NULL OR currency = '';
     `);
 
-    // -------------------------------------------------
-    // SELLER REVIEWS TABLE
-    // -------------------------------------------------
+    // =================================================
+    // SELLER REVIEWS
+    // =================================================
 
     await pool.query(`
       CREATE TABLE IF NOT EXISTS seller_reviews (
@@ -83,33 +83,30 @@ async function setupDatabase() {
           ON DELETE CASCADE,
 
         rating INTEGER NOT NULL
-          CHECK (rating >= 1 AND rating <= 5),
+          CHECK (
+            rating >= 1
+            AND rating <= 5
+          ),
 
         review TEXT,
 
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        created_at TIMESTAMP
+          DEFAULT CURRENT_TIMESTAMP,
 
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        updated_at TIMESTAMP
+          DEFAULT CURRENT_TIMESTAMP
       );
     `);
-
-    // -------------------------------------------------
-    // SELLER REVIEW UNIQUE CONSTRAINT
-    // -------------------------------------------------
 
     await pool.query(`
       CREATE UNIQUE INDEX IF NOT EXISTS
       seller_reviews_buyer_seller_order_unique
-      ON seller_reviews(
+      ON seller_reviews (
         buyer_id,
         seller_id,
         order_id
       );
     `);
-
-    // -------------------------------------------------
-    // SELLER REVIEW INDEXES
-    // -------------------------------------------------
 
     await pool.query(`
       CREATE INDEX IF NOT EXISTS
@@ -129,9 +126,9 @@ async function setupDatabase() {
       ON seller_reviews(order_id);
     `);
 
-    // -------------------------------------------------
-    // NOTIFICATIONS TABLE
-    // -------------------------------------------------
+    // =================================================
+    // NOTIFICATIONS
+    // =================================================
 
     await pool.query(`
       CREATE TABLE IF NOT EXISTS notifications (
@@ -148,17 +145,13 @@ async function setupDatabase() {
         type VARCHAR(50)
           DEFAULT 'general',
 
-        is_read BOOLEAN
-          NOT NULL DEFAULT FALSE,
+        is_read BOOLEAN NOT NULL
+          DEFAULT FALSE,
 
         created_at TIMESTAMP
           DEFAULT CURRENT_TIMESTAMP
       );
     `);
-
-    // -------------------------------------------------
-    // NOTIFICATION INDEXES
-    // -------------------------------------------------
 
     await pool.query(`
       CREATE INDEX IF NOT EXISTS
@@ -178,9 +171,9 @@ async function setupDatabase() {
       ON notifications(created_at);
     `);
 
-    // -------------------------------------------------
-    // PAYMENTS TABLE
-    // -------------------------------------------------
+    // =================================================
+    // PAYMENTS
+    // =================================================
 
     await pool.query(`
       CREATE TABLE IF NOT EXISTS payments (
@@ -194,9 +187,11 @@ async function setupDatabase() {
           REFERENCES users(id)
           ON DELETE CASCADE,
 
-        reference VARCHAR(255) UNIQUE NOT NULL,
+        reference VARCHAR(255)
+          UNIQUE NOT NULL,
 
-        amount DECIMAL(12, 2) NOT NULL,
+        amount DECIMAL(12, 2)
+          NOT NULL,
 
         currency VARCHAR(3)
           NOT NULL DEFAULT 'NGN',
@@ -214,9 +209,20 @@ async function setupDatabase() {
       );
     `);
 
-    // -------------------------------------------------
-    // PAYMENT INDEXES
-    // -------------------------------------------------
+    // Additional payment fields used by the
+    // existing routes/payments.js checkout flow.
+
+    await pool.query(`
+      ALTER TABLE payments
+      ADD COLUMN IF NOT EXISTS
+      checkout_snapshot JSONB;
+    `);
+
+    await pool.query(`
+      ALTER TABLE payments
+      ADD COLUMN IF NOT EXISTS
+      exchange_rate NUMERIC(20, 8);
+    `);
 
     await pool.query(`
       CREATE INDEX IF NOT EXISTS
@@ -242,14 +248,120 @@ async function setupDatabase() {
       ON payments(status);
     `);
 
-    // -------------------------------------------------
+    // =================================================
+    // SELLER ORDER ALLOCATIONS
+    // TASK 8: PAYMENT PROTECTION FOUNDATION
+    // =================================================
+
+    // This table records each seller's portion of
+    // an order after the verified order is created.
+    //
+    // IMPORTANT:
+    // - No bank transfer happens here.
+    // - No escrow is created here.
+    // - No seller balance becomes withdrawable.
+    // - New allocations require review before
+    //   they can ever become payout eligible.
+    //
+    // Each seller has at most one allocation
+    // per order and payment.
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS
+      seller_order_allocations (
+
+        id BIGSERIAL PRIMARY KEY,
+
+        order_id INTEGER NOT NULL
+          REFERENCES orders(id)
+          ON DELETE RESTRICT,
+
+        payment_id INTEGER NOT NULL
+          REFERENCES payments(id)
+          ON DELETE RESTRICT,
+
+        seller_id INTEGER NOT NULL
+          REFERENCES users(id)
+          ON DELETE RESTRICT,
+
+        currency VARCHAR(3) NOT NULL
+          CHECK (
+            currency IN ('USD', 'NGN')
+          ),
+
+        gross_minor BIGINT NOT NULL
+          CHECK (gross_minor > 0),
+
+        status VARCHAR(30) NOT NULL
+          DEFAULT 'pending_review'
+          CHECK (
+            status IN (
+              'pending_review',
+              'blocked',
+              'eligible',
+              'settled',
+              'voided'
+            )
+          ),
+
+        created_at TIMESTAMP NOT NULL
+          DEFAULT CURRENT_TIMESTAMP,
+
+        updated_at TIMESTAMP NOT NULL
+          DEFAULT CURRENT_TIMESTAMP,
+
+        UNIQUE (order_id, seller_id),
+
+        UNIQUE (payment_id, seller_id)
+      );
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS
+      seller_order_allocations_seller_idx
+      ON seller_order_allocations(seller_id);
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS
+      seller_order_allocations_order_idx
+      ON seller_order_allocations(order_id);
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS
+      seller_order_allocations_payment_idx
+      ON seller_order_allocations(payment_id);
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS
+      seller_order_allocations_status_idx
+      ON seller_order_allocations(status);
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS
+      seller_order_allocations_seller_status_idx
+      ON seller_order_allocations(
+        seller_id,
+        status
+      );
+    `);
+
+    console.log(
+      "Seller allocation schema checked successfully"
+    );
+
+    // =================================================
     // REPORTS / BANNING
-    // -------------------------------------------------
+    // =================================================
 
     await pool.query(`
       ALTER TABLE users
       ADD COLUMN IF NOT EXISTS
-      is_banned BOOLEAN NOT NULL DEFAULT FALSE;
+      is_banned BOOLEAN
+      NOT NULL DEFAULT FALSE;
     `);
 
     await pool.query(`
@@ -293,13 +405,11 @@ async function setupDatabase() {
         updated_at TIMESTAMP
           DEFAULT CURRENT_TIMESTAMP,
 
-        CHECK (reporter_id <> reported_user_id)
+        CHECK (
+          reporter_id <> reported_user_id
+        )
       );
     `);
-
-    // -------------------------------------------------
-    // REPORT INDEXES
-    // -------------------------------------------------
 
     await pool.query(`
       CREATE INDEX IF NOT EXISTS
@@ -325,9 +435,9 @@ async function setupDatabase() {
       ON reports(created_at);
     `);
 
-    // -------------------------------------------------
-    // WISHLIST TABLE
-    // -------------------------------------------------
+    // =================================================
+    // WISHLIST
+    // =================================================
 
     await pool.query(`
       CREATE TABLE IF NOT EXISTS wishlist_items (
@@ -348,10 +458,6 @@ async function setupDatabase() {
       );
     `);
 
-    // -------------------------------------------------
-    // WISHLIST INDEXES
-    // -------------------------------------------------
-
     await pool.query(`
       CREATE INDEX IF NOT EXISTS
       wishlist_items_user_id_idx
@@ -371,12 +477,8 @@ async function setupDatabase() {
     `);
 
     // =================================================
-    // CHAT / MESSAGES
+    // CHAT / CONVERSATIONS
     // =================================================
-
-    // -------------------------------------------------
-    // CONVERSATIONS TABLE
-    // -------------------------------------------------
 
     await pool.query(`
       CREATE TABLE IF NOT EXISTS conversations (
@@ -406,13 +508,11 @@ async function setupDatabase() {
           product_id
         ),
 
-        CHECK (buyer_id <> seller_id)
+        CHECK (
+          buyer_id <> seller_id
+        )
       );
     `);
-
-    // -------------------------------------------------
-    // CONVERSATION INDEXES
-    // -------------------------------------------------
 
     await pool.query(`
       CREATE INDEX IF NOT EXISTS
@@ -432,9 +532,9 @@ async function setupDatabase() {
       ON conversations(updated_at);
     `);
 
-    // -------------------------------------------------
-    // MESSAGES TABLE
-    // -------------------------------------------------
+    // =================================================
+    // CHAT MESSAGES
+    // =================================================
 
     await pool.query(`
       CREATE TABLE IF NOT EXISTS messages (
@@ -458,10 +558,6 @@ async function setupDatabase() {
       );
     `);
 
-    // -------------------------------------------------
-    // MESSAGE INDEXES
-    // -------------------------------------------------
-
     await pool.query(`
       CREATE INDEX IF NOT EXISTS
       messages_conversation_id_idx
@@ -480,9 +576,9 @@ async function setupDatabase() {
       ON messages(created_at);
     `);
 
-    // -------------------------------------------------
-    // FINAL MESSAGE
-    // -------------------------------------------------
+    // =================================================
+    // DATABASE SETUP COMPLETE
+    // =================================================
 
     console.log(
       "Database setup completed successfully"
@@ -499,7 +595,6 @@ async function setupDatabase() {
 // API ROUTES
 // =====================================================
 
-// Main GoldMart API routes
 app.use("/api", routes);
 
 // =====================================================
