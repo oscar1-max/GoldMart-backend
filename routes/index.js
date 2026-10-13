@@ -22,6 +22,9 @@ const adminRefundProcessingRoutes = require(
   "./adminRefundProcessing"
 );
 
+// Customer Support Ticket System
+const supportRoutes = require("./support");
+
 const router = express.Router();
 
 // Existing GoldMart routes
@@ -51,6 +54,12 @@ router.use(
 router.use(
   "/admin/refund-processing",
   adminRefundProcessingRoutes
+);
+
+// Customer Support Tickets
+router.use(
+  "/support",
+  supportRoutes
 );
 
 module.exports = router;
