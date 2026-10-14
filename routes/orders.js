@@ -10,20 +10,30 @@ function validId(value) {
   return Number.isSafeInteger(id) && id > 0 ? id : null;
 }
 
+async function finishTransaction(client, commit) {
+  await client.query(commit ? "COMMIT" : "ROLLBACK");
+}
+
 // =====================================================
-// CREATE AN ORDER FROM A VERIFIED PAYMENT SNAPSHOT
+// CREATE ORDER FROM VERIFIED PAYMENT
 // POST /api/orders
 // =====================================================
-
 router.post("/", protect, async (req, res) => {
-  const reference = String(
-    req.body?.paymentReference || ""
-  ).trim();
+  const reference = String(req.body?.paymentReference || "").trim();
 
   if (!reference) {
     return res.status(400).json({
       success: false,
       message: "Payment reference is required.",
+    });
+  }
+
+  const buyerId = validId(req.user?.id);
+
+  if (!buyerId) {
+    return res.status(401).json({
+      success: false,
+      message: "Please sign in.",
     });
   }
 
@@ -34,19 +44,29 @@ router.post("/", protect, async (req, res) => {
     await client.query("BEGIN");
     inTransaction = true;
 
+    // Lock the payment to prevent duplicate orders.
+
     const paymentResult = await client.query(
       `
-      SELECT id, user_id, order_id, reference,
-             amount, currency, status, checkout_snapshot
+      SELECT
+        id,
+        user_id,
+        order_id,
+        reference,
+        amount,
+        currency,
+        status,
+        checkout_snapshot
       FROM payments
-      WHERE reference = $1 AND user_id = $2
+      WHERE reference = $1
+        AND user_id = $2
       FOR UPDATE
       `,
-      [reference, req.user.id]
+      [reference, buyerId]
     );
 
     if (!paymentResult.rows.length) {
-      await client.query("ROLLBACK");
+      await finishTransaction(client, false);
       inTransaction = false;
 
       return res.status(404).json({
@@ -57,19 +77,18 @@ router.post("/", protect, async (req, res) => {
 
     const payment = paymentResult.rows[0];
 
-    // PREVENT DUPLICATE ORDERS
-
     if (payment.order_id) {
       const existing = await client.query(
         `
         SELECT id, user_id, total_amount, status, created_at
         FROM orders
-        WHERE id = $1 AND user_id = $2
+        WHERE id = $1
+          AND user_id = $2
         `,
-        [payment.order_id, req.user.id]
+        [payment.order_id, buyerId]
       );
 
-      await client.query("COMMIT");
+      await finishTransaction(client, true);
       inTransaction = false;
 
       if (!existing.rows.length) {
@@ -87,10 +106,8 @@ router.post("/", protect, async (req, res) => {
       });
     }
 
-    // PAYMENT MUST BE VERIFIED
-
     if (payment.status !== "success") {
-      await client.query("ROLLBACK");
+      await finishTransaction(client, false);
       inTransaction = false;
 
       return res.status(409).json({
@@ -100,23 +117,21 @@ router.post("/", protect, async (req, res) => {
       });
     }
 
-    // LOAD ORIGINAL CHECKOUT DETAILS
-
     const snapshot = payment.checkout_snapshot;
 
     if (
       !snapshot ||
       snapshot.schema_version !== 1 ||
       !Array.isArray(snapshot.items) ||
-      !snapshot.items.length
+      snapshot.items.length === 0
     ) {
-      await client.query("ROLLBACK");
+      await finishTransaction(client, false);
       inTransaction = false;
 
       return res.status(409).json({
         success: false,
         message:
-          "This earlier payment needs reconciliation. If you were charged, do not pay again; contact support with your reference.",
+          "This earlier payment needs reconciliation. If charged, do not pay again; contact support with your reference.",
       });
     }
 
@@ -124,98 +139,109 @@ router.post("/", protect, async (req, res) => {
       snapshot.order_currency || ""
     ).toUpperCase();
 
-    if (!["USD", "NGN"].includes(orderCurrency)) {
-      throw new Error(
-        "Unexpected checkout currency in payment snapshot."
-      );
-    }
-
-    const totalMinor = Number(
-      snapshot.order_total_minor
-    );
-
-    const snapshotKobo = Number(
-      snapshot.expected_kobo
-    );
+    const totalMinor = Number(snapshot.order_total_minor);
+    const expectedKobo = Number(snapshot.expected_kobo);
+    const paidKobo = Math.round(Number(payment.amount) * 100);
 
     if (
+      !["USD", "NGN"].includes(orderCurrency) ||
       !Number.isSafeInteger(totalMinor) ||
       totalMinor <= 0 ||
-      !Number.isSafeInteger(snapshotKobo) ||
-      snapshotKobo <= 0 ||
-      Math.round(Number(payment.amount) * 100) !==
-        snapshotKobo ||
-      String(payment.currency).toUpperCase() !==
-        "NGN"
+      !Number.isSafeInteger(expectedKobo) ||
+      expectedKobo <= 0 ||
+      !Number.isSafeInteger(paidKobo) ||
+      paidKobo !== expectedKobo ||
+      String(payment.currency).toUpperCase() !== "NGN"
     ) {
-      await client.query("ROLLBACK");
+      await finishTransaction(client, false);
       inTransaction = false;
 
       return res.status(409).json({
         success: false,
         message:
-          "Payment values require support review. If you were charged, do not pay again.",
+          "Payment values require support review. If charged, do not pay again.",
       });
     }
 
-    // VALIDATE ALL ORDER ITEMS
+    // =================================================
+    // VALIDATE ITEMS AND CALCULATE SELLER ALLOCATIONS
+    // =================================================
+    //
+    // gross_minor is in the order currency:
+    // USD cents or NGN kobo.
+    //
+    // These are records, not withdrawable balances.
+
+    const items = [];
+    const productIds = new Set();
+    const sellerTotals = new Map();
 
     let computedMinor = 0;
-    const items = [];
-    const ids = new Set();
 
     for (const entry of snapshot.items) {
-      const id = Number(entry.product_id);
+      const id = validId(entry.product_id);
+      const sellerId = validId(entry.seller_id);
       const quantity = Number(entry.quantity);
-      const unitPriceMinor = Number(
-        entry.unit_price_minor
-      );
+      const unitPriceMinor = Number(entry.unit_price_minor);
 
       if (
-        !Number.isSafeInteger(id) ||
-        id <= 0 ||
-        ids.has(id) ||
+        !id ||
+        !sellerId ||
+        productIds.has(id) ||
         !Number.isSafeInteger(quantity) ||
         quantity <= 0 ||
         !Number.isSafeInteger(unitPriceMinor) ||
         unitPriceMinor <= 0
       ) {
+        throw new Error("Invalid payment snapshot items.");
+      }
+
+      const lineMinor = quantity * unitPriceMinor;
+      const nextTotal = computedMinor + lineMinor;
+
+      const nextSellerTotal =
+        (sellerTotals.get(sellerId) || 0) + lineMinor;
+
+      if (
+        !Number.isSafeInteger(lineMinor) ||
+        lineMinor <= 0 ||
+        !Number.isSafeInteger(nextTotal) ||
+        !Number.isSafeInteger(nextSellerTotal)
+      ) {
         throw new Error(
-          "Invalid payment snapshot items."
+          "Payment snapshot total exceeds the supported limit."
         );
       }
 
-      ids.add(id);
+      productIds.add(id);
+      computedMinor = nextTotal;
 
-      computedMinor += quantity * unitPriceMinor;
+      sellerTotals.set(sellerId, nextSellerTotal);
 
       items.push({
         id,
+        sellerId,
         quantity,
         unitPriceMinor,
-        sellerId: Number(entry.seller_id),
       });
     }
 
-    if (
-      !Number.isSafeInteger(computedMinor) ||
-      computedMinor !== totalMinor
-    ) {
+    if (computedMinor !== totalMinor) {
       throw new Error(
         "Payment snapshot totals are inconsistent."
       );
     }
 
-    // CHECK STOCK BEFORE CREATING ORDER
+    // =================================================
+    // LOCK AND VALIDATE PRODUCT STOCK
+    // =================================================
 
-    for (
-      const item of [...items].sort(
-        (a, b) => a.id - b.id
-      )
-    ) {
-      const result = await client.query(
+    for (const item of [...items].sort(
+      (a, b) => a.id - b.id
+    )) {
+      const productResult = await client.query(
         `
-        SELECT id, name, stock, seller_id
+        SELECT id, stock, seller_id
         FROM products
         WHERE id = $1
         FOR UPDATE
@@ -223,12 +249,10 @@ router.post("/", protect, async (req, res) => {
         [item.id]
       );
 
-      if (
-        !result.rows.length ||
-        Number(result.rows[0].stock) <
-          item.quantity
-      ) {
-        await client.query("ROLLBACK");
+      const product = productResult.rows[0];
+
+      if (!product || Number(product.stock) < item.quantity) {
+        await finishTransaction(client, false);
         inTransaction = false;
 
         return res.status(409).json({
@@ -238,30 +262,28 @@ router.post("/", protect, async (req, res) => {
         });
       }
 
-      if (
-        Number(result.rows[0].seller_id) !==
-        item.sellerId
-      ) {
-        await client.query("ROLLBACK");
+      if (Number(product.seller_id) !== item.sellerId) {
+        await finishTransaction(client, false);
         inTransaction = false;
 
         return res.status(409).json({
           success: false,
           message:
-            "A seller changed after payment. Contact support to resolve this paid order; do not pay again.",
+            "A seller changed after payment. Contact support; do not pay again.",
         });
       }
     }
 
-    // SAVE DELIVERY INFORMATION
-
     const delivery =
       snapshot.delivery &&
-      typeof snapshot.delivery === "object"
+      typeof snapshot.delivery === "object" &&
+      !Array.isArray(snapshot.delivery)
         ? snapshot.delivery
         : {};
 
-    // CREATE THE ORDER
+    // =================================================
+    // CREATE ORDER
+    // =================================================
 
     const orderResult = await client.query(
       `
@@ -280,7 +302,7 @@ router.post("/", protect, async (req, res) => {
         created_at
       `,
       [
-        req.user.id,
+        buyerId,
         (totalMinor / 100).toFixed(2),
         JSON.stringify(delivery),
       ]
@@ -288,7 +310,9 @@ router.post("/", protect, async (req, res) => {
 
     const order = orderResult.rows[0];
 
+    // =================================================
     // CREATE ORDER ITEMS AND REDUCE STOCK
+    // =================================================
 
     for (const item of items) {
       await client.query(
@@ -319,19 +343,69 @@ router.post("/", protect, async (req, res) => {
       );
     }
 
+    // =================================================
     // CONNECT PAYMENT TO ORDER
+    // =================================================
 
     await client.query(
       `
       UPDATE payments
-      SET order_id = $1,
-          updated_at = NOW()
+      SET
+        order_id = $1,
+        updated_at = NOW()
       WHERE id = $2
       `,
       [order.id, payment.id]
     );
 
+    // =================================================
+    // TASK 8 — RECORD SELLER ALLOCATIONS
+    // =================================================
+    //
+    // One allocation per seller per order.
+    //
+    // No money is transferred.
+    // No escrow funds are held by this code.
+    // Withdrawals remain disabled.
+    //
+    // This happens in the SAME transaction as
+    // order creation and stock reduction.
+
+    for (const [sellerId, grossMinor] of [
+      ...sellerTotals.entries(),
+    ].sort((a, b) => a[0] - b[0])) {
+      await client.query(
+        `
+        INSERT INTO seller_order_allocations (
+          order_id,
+          payment_id,
+          seller_id,
+          currency,
+          gross_minor,
+          status
+        )
+        VALUES (
+          $1,
+          $2,
+          $3,
+          $4,
+          $5,
+          'pending_review'
+        )
+        `,
+        [
+          order.id,
+          payment.id,
+          sellerId,
+          orderCurrency,
+          String(grossMinor),
+        ]
+      );
+    }
+
+    // =================================================
     // NOTIFY BUYER
+    // =================================================
 
     await client.query(
       `
@@ -345,27 +419,19 @@ router.post("/", protect, async (req, res) => {
       VALUES ($1, $2, $3, 'order', FALSE)
       `,
       [
-        req.user.id,
+        buyerId,
         "Order placed successfully",
         `Your GoldMart order #${order.id} is being processed.`,
       ]
     );
 
-    // NOTIFY SELLERS
+    // =================================================
+    // NOTIFY EACH SELLER
+    // =================================================
 
-    const sellers = [
-      ...new Set(
-        items
-          .map((item) => item.sellerId)
-          .filter(
-            (id) =>
-              Number.isInteger(id) &&
-              id > 0
-          )
-      ),
-    ];
-
-    for (const sellerId of sellers) {
+    for (const sellerId of [
+      ...sellerTotals.keys(),
+    ].sort((a, b) => a - b)) {
       await client.query(
         `
         INSERT INTO notifications (
@@ -390,7 +456,9 @@ router.post("/", protect, async (req, res) => {
       );
     }
 
+    // =================================================
     // REMOVE PURCHASED CART ITEMS
+    // =================================================
 
     for (const item of items) {
       await client.query(
@@ -403,14 +471,14 @@ router.post("/", protect, async (req, res) => {
           AND ci.quantity = $3
         `,
         [
-          req.user.id,
+          buyerId,
           item.id,
           item.quantity,
         ]
       );
     }
 
-    await client.query("COMMIT");
+    await finishTransaction(client, true);
     inTransaction = false;
 
     return res.status(201).json({
@@ -430,7 +498,7 @@ router.post("/", protect, async (req, res) => {
   } catch (error) {
     if (inTransaction) {
       try {
-        await client.query("ROLLBACK");
+        await finishTransaction(client, false);
       } catch (rollbackError) {
         console.error(
           "Order rollback error:",
@@ -439,10 +507,7 @@ router.post("/", protect, async (req, res) => {
       }
     }
 
-    console.error(
-      "Create order error:",
-      error.message
-    );
+    console.error("Create order error:", error.message);
 
     return res.status(500).json({
       success: false,
@@ -455,7 +520,7 @@ router.post("/", protect, async (req, res) => {
 });
 
 // =====================================================
-// GET LOGGED-IN BUYER'S ORDERS
+// GET BUYER ORDERS
 // GET /api/orders
 // =====================================================
 
@@ -531,7 +596,14 @@ router.get(
   protect,
   async (req, res) => {
     try {
-      const sellerId = Number(req.user.id);
+      const sellerId = validId(req.user.id);
+
+      if (!sellerId) {
+        return res.status(401).json({
+          success: false,
+          message: "Please sign in.",
+        });
+      }
 
       const ordersResult = await pool.query(
         `
@@ -544,18 +616,13 @@ router.get(
           u.name AS customer_name,
           u.email AS customer_email
         FROM orders o
-
-        INNER JOIN order_items oi
+        JOIN order_items oi
           ON oi.order_id = o.id
-
-        INNER JOIN products p
+        JOIN products p
           ON p.id = oi.product_id
-
-        INNER JOIN users u
+        JOIN users u
           ON u.id = o.user_id
-
         WHERE p.seller_id = $1
-
         ORDER BY o.created_at DESC
         `,
         [sellerId]
@@ -576,13 +643,10 @@ router.get(
             p.currency,
             p.seller_id
           FROM order_items oi
-
-          INNER JOIN products p
+          JOIN products p
             ON p.id = oi.product_id
-
           WHERE oi.order_id = $1
             AND p.seller_id = $2
-
           ORDER BY oi.id ASC
           `,
           [order.id, sellerId]
@@ -613,8 +677,7 @@ router.get(
 );
 
 // =====================================================
-// UPDATE SELLER ORDER STATUS
-// PROTECT AGAINST CANCELLATION / REFUND REQUESTS
+// SELLER ORDER STATUS
 // PUT /api/orders/seller/:orderId/status
 // =====================================================
 
@@ -622,19 +685,12 @@ router.put(
   "/seller/:orderId/status",
   protect,
   async (req, res) => {
-    const orderId = validId(
-      req.params.orderId
-    );
-
-    const sellerId = validId(
-      req.user?.id
-    );
+    const orderId = validId(req.params.orderId);
+    const sellerId = validId(req.user?.id);
 
     const status = String(
       req.body?.status || ""
-    )
-      .trim()
-      .toLowerCase();
+    ).trim().toLowerCase();
 
     if (!orderId || !sellerId) {
       return res.status(400).json({
@@ -644,20 +700,15 @@ router.put(
       });
     }
 
-    // Sellers cannot approve refunds
-    // by changing an order status.
-
-    if (
-      ![
-        "processing",
-        "shipped",
-        "delivered",
-      ].includes(status)
-    ) {
+    if (![
+      "processing",
+      "shipped",
+      "delivered",
+    ].includes(status)) {
       return res.status(400).json({
         success: false,
         message:
-          "Sellers can only progress an order to Processing, Shipped, or Delivered. Cancellations must use buyer protection and admin review.",
+          "Sellers can only progress an order to Processing, Shipped, or Delivered. Cancellations require buyer protection and admin review.",
       });
     }
 
@@ -668,15 +719,9 @@ router.put(
       await client.query("BEGIN");
       inTransaction = true;
 
-      // Lock the order to prevent
-      // simultaneous updates.
-
       const orderResult = await client.query(
         `
-        SELECT
-          id,
-          user_id,
-          status
+        SELECT id, user_id, status
         FROM orders
         WHERE id = $1
         FOR UPDATE
@@ -685,7 +730,7 @@ router.put(
       );
 
       if (!orderResult.rows.length) {
-        await client.query("ROLLBACK");
+        await finishTransaction(client, false);
         inTransaction = false;
 
         return res.status(404).json({
@@ -694,34 +739,25 @@ router.put(
         });
       }
 
-      // Confirm that this seller
-      // owns the products in this order.
+      // Confirm that this seller owns the order.
 
-      const ownershipResult =
-        await client.query(
-          `
-          SELECT DISTINCT p.seller_id
-          FROM order_items oi
-          JOIN products p
-            ON p.id = oi.product_id
-          WHERE oi.order_id = $1
-          `,
-          [orderId]
-        );
+      const ownershipResult = await client.query(
+        `
+        SELECT DISTINCT p.seller_id
+        FROM order_items oi
+        JOIN products p
+          ON p.id = oi.product_id
+        WHERE oi.order_id = $1
+        `,
+        [orderId]
+      );
 
-      const sellerIds =
-        ownershipResult.rows
-          .map((row) =>
-            Number(row.seller_id)
-          )
-          .filter(
-            (id) =>
-              Number.isSafeInteger(id) &&
-              id > 0
-          );
+      const sellerIds = ownershipResult.rows
+        .map((row) => validId(row.seller_id))
+        .filter(Boolean);
 
       if (!sellerIds.includes(sellerId)) {
-        await client.query("ROLLBACK");
+        await finishTransaction(client, false);
         inTransaction = false;
 
         return res.status(403).json({
@@ -731,15 +767,13 @@ router.put(
         });
       }
 
-      // One order can contain several
-      // sellers, but each needs separate
-      // fulfilment tracking.
+      // Multi-seller fulfillment requires separate tracking.
 
       if (
         ownershipResult.rows.length !== 1 ||
         sellerIds.length !== 1
       ) {
-        await client.query("ROLLBACK");
+        await finishTransaction(client, false);
         inTransaction = false;
 
         return res.status(409).json({
@@ -749,26 +783,21 @@ router.put(
         });
       }
 
-      // =================================================
-      // IMPORTANT: BLOCK ACTIVE REFUND REQUESTS
-      // =================================================
+      // Active refund requests block fulfillment changes.
 
-      const protectionResult =
-        await client.query(
-          `
-          SELECT
-            id,
-            status
-          FROM goldmart_refund_requests
-          WHERE order_id = $1
-            AND status <> 'rejected'
-          LIMIT 1
-          `,
-          [orderId]
-        );
+      const protectionResult = await client.query(
+        `
+        SELECT id, status
+        FROM goldmart_refund_requests
+        WHERE order_id = $1
+          AND status <> 'rejected'
+        LIMIT 1
+        `,
+        [orderId]
+      );
 
       if (protectionResult.rows.length) {
-        await client.query("ROLLBACK");
+        await finishTransaction(client, false);
         inTransaction = false;
 
         return res.status(409).json({
@@ -782,14 +811,10 @@ router.put(
 
       const currentStatus = String(
         orderResult.rows[0].status || ""
-      )
-        .trim()
-        .toLowerCase();
-
-      // Cannot reopen a cancelled order.
+      ).trim().toLowerCase();
 
       if (currentStatus === "cancelled") {
-        await client.query("ROLLBACK");
+        await finishTransaction(client, false);
         inTransaction = false;
 
         return res.status(409).json({
@@ -799,8 +824,6 @@ router.put(
         });
       }
 
-      // Prevent skipping status steps.
-
       const allowedNext = {
         pending: ["processing"],
         processing: ["shipped"],
@@ -808,32 +831,25 @@ router.put(
         delivered: [],
       };
 
-      // Avoid duplicate notifications
-      // when status is unchanged.
-
       if (currentStatus === status) {
-        await client.query("COMMIT");
+        await finishTransaction(client, true);
         inTransaction = false;
 
         return res.json({
           success: true,
-          message:
-            "Order already has this status.",
+          message: "Order already has this status.",
           order: {
             id: orderId,
-            user_id:
-              orderResult.rows[0].user_id,
+            user_id: orderResult.rows[0].user_id,
             status: currentStatus,
           },
         });
       }
 
       if (
-        !(
-          allowedNext[currentStatus] || []
-        ).includes(status)
+        !(allowedNext[currentStatus] || []).includes(status)
       ) {
-        await client.query("ROLLBACK");
+        await finishTransaction(client, false);
         inTransaction = false;
 
         return res.status(409).json({
@@ -843,31 +859,22 @@ router.put(
         });
       }
 
-      // =================================================
-      // UPDATE THE ORDER
-      // =================================================
+      const updatedResult = await client.query(
+        `
+        UPDATE orders
+        SET status = $1
+        WHERE id = $2
+        RETURNING
+          id,
+          user_id,
+          total_amount,
+          status,
+          created_at
+        `,
+        [status, orderId]
+      );
 
-      const updatedResult =
-        await client.query(
-          `
-          UPDATE orders
-          SET status = $1
-          WHERE id = $2
-
-          RETURNING
-            id,
-            user_id,
-            total_amount,
-            status,
-            created_at
-          `,
-          [status, orderId]
-        );
-
-      const updatedOrder =
-        updatedResult.rows[0];
-
-      // Notify the buyer.
+      const updatedOrder = updatedResult.rows[0];
 
       await client.query(
         `
@@ -878,13 +885,7 @@ router.put(
           type,
           is_read
         )
-        VALUES (
-          $1,
-          $2,
-          $3,
-          'order',
-          FALSE
-        )
+        VALUES ($1, $2, $3, 'order', FALSE)
         `,
         [
           updatedOrder.user_id,
@@ -893,22 +894,21 @@ router.put(
         ]
       );
 
-      await client.query("COMMIT");
+      await finishTransaction(client, true);
       inTransaction = false;
 
       return res.json({
         success: true,
-        message:
-          "Order status updated successfully.",
+        message: "Order status updated successfully.",
         order: updatedOrder,
       });
     } catch (error) {
       if (inTransaction) {
         try {
-          await client.query("ROLLBACK");
+          await finishTransaction(client, false);
         } catch (rollbackError) {
           console.error(
-            "Order rollback error:",
+            "Seller status rollback error:",
             rollbackError.message
           );
         }
@@ -921,8 +921,7 @@ router.put(
 
       return res.status(500).json({
         success: false,
-        message:
-          "Failed to update order status.",
+        message: "Failed to update order status.",
       });
     } finally {
       client.release();
@@ -940,9 +939,7 @@ router.get(
   protect,
   async (req, res) => {
     try {
-      const orderId = validId(
-        req.params.orderId
-      );
+      const orderId = validId(req.params.orderId);
 
       if (!orderId) {
         return res.status(400).json({
@@ -986,12 +983,9 @@ router.get(
           p.seller_id,
           p.currency
         FROM order_items oi
-
         LEFT JOIN products p
           ON p.id = oi.product_id
-
         WHERE oi.order_id = $1
-
         ORDER BY oi.id ASC
         `,
         [orderId]
@@ -1010,15 +1004,10 @@ router.get(
 
       return res.status(500).json({
         success: false,
-        message:
-          "Failed to fetch order details.",
+        message: "Failed to fetch order details.",
       });
     }
   }
 );
-
-// =====================================================
-// EXPORT ROUTER
-// =====================================================
 
 module.exports = router;
