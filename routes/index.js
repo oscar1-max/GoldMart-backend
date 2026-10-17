@@ -1,4 +1,6 @@
 
+"use strict";
+
 const express = require("express");
 
 // ========================================
@@ -19,13 +21,17 @@ const notificationRoutes = require("./notifications");
 // BUYER PROTECTION
 // ========================================
 
-const orderProtectionRoutes = require("./orderProtection");
+const orderProtectionRoutes = require(
+  "./orderProtection"
+);
 
 // ========================================
 // ADMIN REFUND MANAGEMENT
 // ========================================
 
-const adminRefundRoutes = require("./adminRefunds");
+const adminRefundRoutes = require(
+  "./adminRefunds"
+);
 
 // ========================================
 // PAYSTACK REFUND PROCESSING
@@ -45,7 +51,13 @@ const supportRoutes = require("./support");
 // GOLDMART AI ADMIN
 // ========================================
 
+// Existing read-only monitoring dashboard
 const aiAdminRoutes = require("./aiAdmin");
+
+// New OpenAI-powered admin chat
+const aiAdminChatRoutes = require(
+  "./aiAdminChat"
+);
 
 // ========================================
 // CREATE ROUTER
@@ -73,7 +85,10 @@ router.use("/seller", sellerRoutes);
 
 router.use("/reviews", reviewRoutes);
 
-router.use("/notifications", notificationRoutes);
+router.use(
+  "/notifications",
+  notificationRoutes
+);
 
 // ========================================
 // BUYER PROTECTION
@@ -112,17 +127,37 @@ router.use(
 );
 
 // ========================================
-// GOLDMART AI ADMIN
+// GOLDMART AI ADMIN CHAT
 // ========================================
 //
-// Protected inside routes/aiAdmin.js by:
+// IMPORTANT:
+// Mount the chat route BEFORE the general
+// AI Admin route.
 //
-// protect
-// requireAiAdmin
+// The general AI Admin router contains a
+// catch-all 404 handler, so reversing these
+// two routes would prevent AI Chat from
+// being reached.
 //
-// Only authorized admin accounts can access it.
+// Authentication and admin-only access
+// are enforced inside aiAdminChat.js.
 //
-// The AI Admin is currently READ-ONLY.
+// AI Chat is currently READ-ONLY.
+// ========================================
+
+router.use(
+  "/ai-admin/chat",
+  aiAdminChatRoutes
+);
+
+// ========================================
+// GOLDMART AI ADMIN MONITORING
+// ========================================
+//
+// Existing dashboard and overview.
+//
+// Authentication and admin-only access
+// are enforced inside aiAdmin.js.
 // ========================================
 
 router.use(
