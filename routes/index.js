@@ -4,7 +4,7 @@
 const express = require("express");
 
 // ========================================
-// EXISTING GOLDMART ROUTES
+// GOLDMART MARKETPLACE ROUTES
 // ========================================
 
 const authRoutes = require("./auth");
@@ -54,28 +54,34 @@ const supportRoutes = require("./support");
 // Free rule-based assistant and analytics
 const aiAdminRoutes = require("./aiAdmin");
 
-// Existing OpenAI API chat route
-// Kept for compatibility.
-// Free chat uses /ai-admin/free-chat instead.
+// Existing optional OpenAI-powered chat
+// The free assistant does not use this route.
 const aiAdminChatRoutes = require(
   "./aiAdminChat"
 );
 
 // ========================================
-// NEW: GOLDMART INTELLIGENT MONITORING
-// ========================================
-//
-// Saves operational alerts.
-// Tracks administrator acknowledgement.
-// Permits resolving cleared alerts.
-//
-// Admin-only access is enforced inside
-// adminMonitoring.js.
-//
+// INTELLIGENT MONITORING
 // ========================================
 
 const adminMonitoringRoutes = require(
   "./adminMonitoring"
+);
+
+// ========================================
+// NEW: FREE ADMIN SUPPORT DRAFTS
+// ========================================
+//
+// Generates response drafts for authorized
+// GoldMart administrators.
+//
+// Does not send messages automatically.
+// Does not process payments or refunds.
+//
+// ========================================
+
+const adminSupportDraftRoutes = require(
+  "./adminSupportDrafts"
 );
 
 // ========================================
@@ -119,7 +125,7 @@ router.use(
 );
 
 // ========================================
-// ADMIN REFUND REVIEWS
+// ADMIN REFUND MANAGEMENT
 // ========================================
 
 router.use(
@@ -146,19 +152,13 @@ router.use(
 );
 
 // ========================================
-// NEW: INTELLIGENT MONITORING
+// INTELLIGENT MONITORING
 // ========================================
-//
-// These endpoints manage monitoring
-// alert records only.
 //
 // GET   /api/admin-monitoring/alerts
 // POST  /api/admin-monitoring/scan
 // PATCH /api/admin-monitoring/alerts/:id/acknowledge
 // PATCH /api/admin-monitoring/alerts/:id/resolve
-//
-// No refunds, payments, orders or
-// seller funds are modified.
 //
 // ========================================
 
@@ -168,17 +168,35 @@ router.use(
 );
 
 // ========================================
-// GOLDMART AI ADMIN CHAT
+// NEW: ADMIN SUPPORT DRAFT ASSISTANT
 // ========================================
 //
-// Keep this BEFORE /ai-admin.
+// GET  /api/admin-support-drafts
+// POST /api/admin-support-drafts/draft
 //
-// The general AI Admin router contains
-// a catch-all 404 handler.
+// Only authorized administrators can
+// access these endpoints.
 //
-// The existing paid-model endpoint
-// remains registered but is not used
-// by the free Pro dashboard.
+// ========================================
+
+router.use(
+  "/admin-support-drafts",
+  adminSupportDraftRoutes
+);
+
+// ========================================
+// OPTIONAL PAID AI CHAT ROUTE
+// ========================================
+//
+// Kept for compatibility.
+//
+// The existing GoldMart free assistant
+// does not call this endpoint.
+//
+// IMPORTANT:
+// Keep this route BEFORE /ai-admin
+// because aiAdmin.js includes a
+// catch-all 404 handler.
 //
 // ========================================
 
@@ -188,14 +206,12 @@ router.use(
 );
 
 // ========================================
-// GOLDMART ADMIN ASSISTANT PRO
+// FREE GOLDMART ADMIN ASSISTANT PRO
 // ========================================
 //
 // GET  /api/ai-admin
 // GET  /api/ai-admin/overview
 // POST /api/ai-admin/free-chat
-//
-// Protected administrator routes.
 //
 // ========================================
 
@@ -205,7 +221,7 @@ router.use(
 );
 
 // ========================================
-// EXPORT MAIN ROUTER
+// EXPORT
 // ========================================
 
 module.exports = router;
