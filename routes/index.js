@@ -48,19 +48,38 @@ const adminRefundProcessingRoutes = require(
 const supportRoutes = require("./support");
 
 // ========================================
-// GOLDMART AI ADMIN
+// GOLDMART ADMIN ASSISTANT PRO
 // ========================================
 
-// Existing read-only monitoring dashboard
+// Free rule-based assistant and analytics
 const aiAdminRoutes = require("./aiAdmin");
 
-// New OpenAI-powered admin chat
+// Existing OpenAI API chat route
+// Kept for compatibility.
+// Free chat uses /ai-admin/free-chat instead.
 const aiAdminChatRoutes = require(
   "./aiAdminChat"
 );
 
 // ========================================
-// CREATE ROUTER
+// NEW: GOLDMART INTELLIGENT MONITORING
+// ========================================
+//
+// Saves operational alerts.
+// Tracks administrator acknowledgement.
+// Permits resolving cleared alerts.
+//
+// Admin-only access is enforced inside
+// adminMonitoring.js.
+//
+// ========================================
+
+const adminMonitoringRoutes = require(
+  "./adminMonitoring"
+);
+
+// ========================================
+// CREATE MAIN ROUTER
 // ========================================
 
 const router = express.Router();
@@ -127,22 +146,40 @@ router.use(
 );
 
 // ========================================
+// NEW: INTELLIGENT MONITORING
+// ========================================
+//
+// These endpoints manage monitoring
+// alert records only.
+//
+// GET   /api/admin-monitoring/alerts
+// POST  /api/admin-monitoring/scan
+// PATCH /api/admin-monitoring/alerts/:id/acknowledge
+// PATCH /api/admin-monitoring/alerts/:id/resolve
+//
+// No refunds, payments, orders or
+// seller funds are modified.
+//
+// ========================================
+
+router.use(
+  "/admin-monitoring",
+  adminMonitoringRoutes
+);
+
+// ========================================
 // GOLDMART AI ADMIN CHAT
 // ========================================
 //
-// IMPORTANT:
-// Mount the chat route BEFORE the general
-// AI Admin route.
+// Keep this BEFORE /ai-admin.
 //
-// The general AI Admin router contains a
-// catch-all 404 handler, so reversing these
-// two routes would prevent AI Chat from
-// being reached.
+// The general AI Admin router contains
+// a catch-all 404 handler.
 //
-// Authentication and admin-only access
-// are enforced inside aiAdminChat.js.
+// The existing paid-model endpoint
+// remains registered but is not used
+// by the free Pro dashboard.
 //
-// AI Chat is currently READ-ONLY.
 // ========================================
 
 router.use(
@@ -151,13 +188,15 @@ router.use(
 );
 
 // ========================================
-// GOLDMART AI ADMIN MONITORING
+// GOLDMART ADMIN ASSISTANT PRO
 // ========================================
 //
-// Existing dashboard and overview.
+// GET  /api/ai-admin
+// GET  /api/ai-admin/overview
+// POST /api/ai-admin/free-chat
 //
-// Authentication and admin-only access
-// are enforced inside aiAdmin.js.
+// Protected administrator routes.
+//
 // ========================================
 
 router.use(
@@ -166,7 +205,7 @@ router.use(
 );
 
 // ========================================
-// EXPORT ROUTER
+// EXPORT MAIN ROUTER
 // ========================================
 
 module.exports = router;
