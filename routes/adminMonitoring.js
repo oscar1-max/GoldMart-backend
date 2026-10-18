@@ -1,37 +1,22 @@
 
 "use strict";
 
-// =====================================================
 // GOLDMART ADMIN MONITORING
-// FREE, RULE-BASED, ADMIN-ONLY
-// =====================================================
-//
-// Checks run only when POST /scan is called.
+// Persistent alerts + administrator notifications.
 // No paid AI API.
-// No scheduler yet.
 //
-// This route manages monitoring ALERTS only.
-// It never modifies orders, refunds,
-// payments, sellers, or payout records.
-//
-// =====================================================
+// Every route requires authorized administrator access.
+// No changes to payments, refunds, orders or accounts.
 
 const express = require("express");
 const pool = require("../db");
 
-const {
-  protect,
-} = require("../middleware/auth");
-
+const { protect } = require("../middleware/auth");
 const {
   requireAiAdmin,
 } = require("../middleware/requireAiAdmin");
 
 const router = express.Router();
-
-// =====================================================
-// SECURITY
-// =====================================================
 
 router.use(protect);
 router.use(requireAiAdmin);
@@ -41,20 +26,60 @@ router.use((req, res, next) => {
   next();
 });
 
-// =====================================================
-// DETECT CURRENT OPERATIONAL ISSUES
-// =====================================================
-//
-// Fixed monitoring rules.
-// Only aggregate counts are read.
-//
-// Alert keys are permanent identifiers
-// for each monitoring rule.
-//
-// =====================================================
+const SCAN_LOCK_ID = 71019201;
 
-async function detectIssues() {
-  const result = await pool.query(`
+// ============================================
+// HELPERS
+// ============================================
+
+function parseId(value) {
+  const number = Number(value);
+
+  return /^\d+$/.test(String(value)) &&
+    Number.isSafeInteger(number) &&
+    number > 0
+    ? number
+    : null;
+}
+
+function adminIds(currentAdminId) {
+  const ids = String(
+    process.env.ADMIN_USER_ID || ""
+  )
+    .split(",")
+    .map((part) => Number(part.trim()))
+    .filter(
+      (id) =>
+        Number.isSafeInteger(id) &&
+        id > 0
+    );
+
+  // The current user has already passed
+  // the administrator authorization check.
+  return [
+    ...new Set([...ids, currentAdminId]),
+  ];
+}
+
+function serverError(res, action, error) {
+  console.error(
+    `GoldMart monitoring ${action}:`,
+    error.message
+  );
+
+  return res.status(500).json({
+    success: false,
+    message:
+      "Unable to complete the monitoring request.",
+  });
+}
+
+// ============================================
+// DETECT MARKETPLACE ISSUES
+// ============================================
+
+async function detectIssues(db) {
+  const { rows } = await db.query(`
     SELECT
 
       (
@@ -100,137 +125,177 @@ async function detectIssues() {
       ) AS allocations_waiting
   `);
 
-  const row = result.rows[0] || {};
+  const data = rows[0] || {};
 
-  function count(field) {
-    const value = Number(row[field]);
+  const get = (key) => {
+    const value = Number(data[key]);
 
     return Number.isSafeInteger(value) &&
       value >= 0
       ? value
       : 0;
-  }
+  };
 
   const rules = [
-    {
-      key: "refund_review",
-      type: "refund_review",
-      severity: "attention",
-      title: "Refund requests awaiting review",
-      count: count("refunds_waiting"),
-      description:
-        "refund request(s) await administrator review",
-    },
-
-    {
-      key: "refund_processing",
-      type: "refund_processing",
-      severity: "attention",
-      title: "Refund processing needs monitoring",
-      count: count("refunds_processing"),
-      description:
-        "refund request(s) have refund_pending status",
-    },
-
-    {
-      key: "orders_over_7_days",
-      type: "very_delayed_orders",
-      severity: "high",
-      title: "Orders processing over 7 days",
-      count: count("orders_over_7_days"),
-      description:
-        "order(s) have been processing for over 7 days",
-    },
-
-    {
-      key: "orders_72h_to_7d",
-      type: "delayed_orders",
-      severity: "attention",
-      title:
-        "Orders processing for 72 hours to 7 days",
-      count: count("orders_72h_to_7d"),
-      description:
-        "order(s) have been processing for 72 hours to 7 days",
-    },
-
-    {
-      key: "allocations_blocked",
-      type: "blocked_allocations",
-      severity: "attention",
-      title: "Seller allocations blocked",
-      count: count("allocations_blocked"),
-      description:
-        "seller allocation record(s) are blocked",
-    },
-
-    {
-      key: "allocations_waiting",
-      type: "allocation_review",
-      severity: "information",
-      title: "Seller allocations pending review",
-      count: count("allocations_waiting"),
-      description:
-        "seller allocation record(s) await review",
-    },
+    [
+      "refund_review",
+      "attention",
+      "Refund requests awaiting review",
+      get("refunds_waiting"),
+      "refund request(s) await administrator review",
+    ],
+    [
+      "refund_processing",
+      "attention",
+      "Refund processing needs monitoring",
+      get("refunds_processing"),
+      "refund request(s) have refund_pending status",
+    ],
+    [
+      "orders_over_7_days",
+      "high",
+      "Orders processing over 7 days",
+      get("orders_over_7_days"),
+      "order(s) have been processing for over 7 days",
+    ],
+    [
+      "orders_72h_to_7d",
+      "attention",
+      "Orders processing for 72 hours to 7 days",
+      get("orders_72h_to_7d"),
+      "order(s) have been processing for 72 hours to 7 days",
+    ],
+    [
+      "allocations_blocked",
+      "attention",
+      "Seller allocations blocked",
+      get("allocations_blocked"),
+      "seller allocation record(s) are blocked",
+    ],
+    [
+      "allocations_waiting",
+      "information",
+      "Seller allocations pending review",
+      get("allocations_waiting"),
+      "seller allocation record(s) await review",
+    ],
   ];
 
   return rules
-    .filter((rule) => rule.count > 0)
-    .map((rule) => ({
-      alert_key: rule.key,
-      alert_type: rule.type,
-      severity: rule.severity,
-      title: rule.title,
-
-      message:
-        `${rule.count} ${rule.description}. ` +
-        "Check the underlying records before acting.",
-    }));
+    .filter(([, , , count]) => count > 0)
+    .map(
+      ([
+        key,
+        severity,
+        title,
+        count,
+        description,
+      ]) => ({
+        alert_key: key,
+        alert_type: key,
+        severity,
+        title,
+        message:
+          `${count} ${description}. ` +
+          "Check the underlying records before acting.",
+      })
+    );
 }
 
-// =====================================================
-// HELPERS
-// =====================================================
+// ============================================
+// ADMINISTRATOR NOTIFICATIONS
+// ============================================
+//
+// Sends a notification when an alert is first
+// detected or when a resolved alert reopens.
+//
+// A database SAVEPOINT protects the monitoring
+// scan if the notification table has a different
+// constraint or required column.
+//
+// ============================================
 
-function parseId(raw) {
-  const value = Number(raw);
-
-  if (
-    !/^\d+$/.test(String(raw)) ||
-    !Number.isSafeInteger(value) ||
-    value <= 0
-  ) {
-    return null;
-  }
-
-  return value;
-}
-
-function sendError(res, context, error) {
-  console.error(
-    `Admin monitoring ${context}:`,
-    error.message
+async function notifyAdmins(
+  client,
+  alert,
+  ids
+) {
+  await client.query(
+    "SAVEPOINT goldmart_notify"
   );
 
-  return res.status(500).json({
-    success: false,
-    message:
-      "Unable to complete the monitoring request.",
-  });
+  try {
+    const result = await client.query(
+      `
+      INSERT INTO notifications (
+        user_id,
+        title,
+        message,
+        type,
+        is_read,
+        created_at
+      )
+
+      SELECT
+        u.id,
+        $2,
+        $3,
+        'admin_alert',
+        FALSE,
+        NOW()
+
+      FROM users u
+
+      WHERE u.id = ANY($1::bigint[])
+        AND COALESCE(
+          u.is_banned,
+          FALSE
+        ) = FALSE
+
+      RETURNING id
+      `,
+      [
+        ids,
+        `GoldMart alert: ${alert.title}`,
+        alert.message,
+      ]
+    );
+
+    await client.query(
+      "RELEASE SAVEPOINT goldmart_notify"
+    );
+
+    return {
+      count: result.rowCount || 0,
+      error: null,
+    };
+  } catch (error) {
+    await client.query(
+      "ROLLBACK TO SAVEPOINT goldmart_notify"
+    );
+
+    await client.query(
+      "RELEASE SAVEPOINT goldmart_notify"
+    );
+
+    console.error(
+      "GoldMart alert notification error:",
+      error.message
+    );
+
+    return {
+      count: 0,
+      error:
+        "Alert saved, but notifications could " +
+        "not be created. Check notifications " +
+        "table constraints.",
+    };
+  }
 }
 
-// =====================================================
+// ============================================
 // GET /api/admin-monitoring/alerts
-// VIEW SAVED ALERT HISTORY
-// =====================================================
-//
-// Optional filter:
-// ?status=all
-// ?status=open
-// ?status=acknowledged
-// ?status=resolved
-//
-// =====================================================
+// ============================================
 
 router.get("/alerts", async (req, res) => {
   const status =
@@ -238,14 +303,14 @@ router.get("/alerts", async (req, res) => {
       ? req.query.status
       : "all";
 
-  const allowedStatuses = [
-    "all",
-    "open",
-    "acknowledged",
-    "resolved",
-  ];
-
-  if (!allowedStatuses.includes(status)) {
+  if (
+    ![
+      "all",
+      "open",
+      "acknowledged",
+      "resolved",
+    ].includes(status)
+  ) {
     return res.status(400).json({
       success: false,
       message: "Invalid alert status filter.",
@@ -303,41 +368,81 @@ router.get("/alerts", async (req, res) => {
       returned: result.rows.length,
 
       note:
-        "Alerts are observations, not proof of fraud or wrongdoing.",
+        "Monitoring alerts are observations, " +
+        "not proof of wrongdoing.",
     });
   } catch (error) {
-    return sendError(
+    return serverError(
       res,
-      "list",
+      "list alerts",
       error
     );
   }
 });
 
-// =====================================================
+// ============================================
 // POST /api/admin-monitoring/scan
-// SCAN AND SAVE CURRENT ALERTS
-// =====================================================
+// ============================================
 //
-// Detects active issues and saves them.
+// Scans marketplace records.
+// Saves or updates monitoring alerts.
+// Notifies admins only for NEW or REOPENED
+// alert conditions.
 //
-// An existing acknowledged alert stays
-// acknowledged during repeated scans.
+// Previously acknowledged alerts stay
+// acknowledged on repeated scans.
 //
-// A resolved issue that reappears gets
-// reopened.
-//
-// Old alerts are not automatically deleted.
-//
-// =====================================================
+// ============================================
 
 router.post("/scan", async (req, res) => {
+  let client;
+
   try {
+    client = await pool.connect();
+
+    await client.query("BEGIN");
+
+    // Prevent simultaneous scans from producing
+    // duplicate new-alert notifications.
+    await client.query(
+      "SELECT pg_advisory_xact_lock($1)",
+      [SCAN_LOCK_ID]
+    );
+
     const detected =
-      await detectIssues();
+      await detectIssues(client);
+
+    const ids = adminIds(
+      req.aiAdmin.userId
+    );
+
+    let newAlerts = 0;
+    let reopenedAlerts = 0;
+    let notificationsCreated = 0;
+
+    const warnings = [];
 
     for (const alert of detected) {
-      await pool.query(
+      const existing = await client.query(
+        `
+        SELECT status
+        FROM goldmart_admin_alerts
+        WHERE alert_key = $1
+        FOR UPDATE
+        `,
+        [alert.alert_key]
+      );
+
+      const previousStatus =
+        existing.rows[0]?.status;
+
+      const newlyDetected =
+        previousStatus === undefined;
+
+      const reopened =
+        previousStatus === "resolved";
+
+      await client.query(
         `
         INSERT INTO goldmart_admin_alerts (
           alert_key,
@@ -346,6 +451,7 @@ router.post("/scan", async (req, res) => {
           title,
           message
         )
+
         VALUES (
           $1, $2, $3, $4, $5
         )
@@ -370,8 +476,8 @@ router.post("/scan", async (req, res) => {
           updated_at = NOW(),
 
           status = CASE
-            WHEN goldmart_admin_alerts.status
-              = 'resolved'
+            WHEN goldmart_admin_alerts.status =
+              'resolved'
             THEN 'open'
             ELSE goldmart_admin_alerts.status
           END,
@@ -379,15 +485,15 @@ router.post("/scan", async (req, res) => {
           resolved_at = NULL,
 
           acknowledged_at = CASE
-            WHEN goldmart_admin_alerts.status
-              = 'resolved'
+            WHEN goldmart_admin_alerts.status =
+              'resolved'
             THEN NULL
             ELSE goldmart_admin_alerts.acknowledged_at
           END,
 
           acknowledged_by = CASE
-            WHEN goldmart_admin_alerts.status
-              = 'resolved'
+            WHEN goldmart_admin_alerts.status =
+              'resolved'
             THEN NULL
             ELSE goldmart_admin_alerts.acknowledged_by
           END
@@ -400,7 +506,40 @@ router.post("/scan", async (req, res) => {
           alert.message,
         ]
       );
+
+      if (newlyDetected || reopened) {
+        if (newlyDetected) {
+          newAlerts++;
+        }
+
+        if (reopened) {
+          reopenedAlerts++;
+        }
+
+        const notification =
+          await notifyAdmins(
+            client,
+            alert,
+            ids
+          );
+
+        notificationsCreated +=
+          notification.count;
+
+        if (
+          notification.error &&
+          !warnings.includes(
+            notification.error
+          )
+        ) {
+          warnings.push(
+            notification.error
+          );
+        }
+      }
     }
+
+    await client.query("COMMIT");
 
     return res.json({
       success: true,
@@ -410,39 +549,52 @@ router.post("/scan", async (req, res) => {
 
       detected_alert_keys:
         detected.map(
-          (item) => item.alert_key
+          (alert) => alert.alert_key
         ),
+
+      new_alerts:
+        newAlerts,
+
+      reopened_alerts:
+        reopenedAlerts,
+
+      notifications_created:
+        notificationsCreated,
+
+      warnings,
 
       checked_at:
         new Date().toISOString(),
 
       note:
-        "Active issues were saved. " +
-        "Past alerts remain available. " +
-        "No orders, refunds, payouts, " +
-        "or accounts were changed.",
+        "Marketplace issues were checked. " +
+        "No payment, refund, order or " +
+        "account records were changed.",
     });
   } catch (error) {
-    return sendError(
+    if (client) {
+      try {
+        await client.query("ROLLBACK");
+      } catch (_) {
+        // Best-effort rollback.
+      }
+    }
+
+    return serverError(
       res,
       "scan",
       error
     );
+  } finally {
+    if (client) {
+      client.release();
+    }
   }
 });
 
-// =====================================================
-// PATCH /api/admin-monitoring/alerts/:id/acknowledge
-// ADMIN ACKNOWLEDGES AN ALERT
-// =====================================================
-//
-// Acknowledging means an administrator
-// has seen the alert.
-//
-// It does not mean that the underlying
-// issue has been fixed.
-//
-// =====================================================
+// ============================================
+// PATCH /alerts/:id/acknowledge
+// ============================================
 
 router.patch(
   "/alerts/:id/acknowledge",
@@ -465,11 +617,8 @@ router.patch(
 
         SET
           status = 'acknowledged',
-
           acknowledged_at = NOW(),
-
           acknowledged_by = $2,
-
           updated_at = NOW()
 
         WHERE id = $1
@@ -493,8 +642,8 @@ router.patch(
           success: false,
 
           message:
-            "This alert does not exist " +
-            "or is no longer open.",
+            "Alert does not exist or " +
+            "is no longer open.",
         });
       }
 
@@ -503,7 +652,7 @@ router.patch(
         alert: result.rows[0],
       });
     } catch (error) {
-      return sendError(
+      return serverError(
         res,
         "acknowledge",
         error
@@ -512,19 +661,14 @@ router.patch(
   }
 );
 
-// =====================================================
-// PATCH /api/admin-monitoring/alerts/:id/resolve
-// RESOLVE A MONITORING ALERT
-// =====================================================
+// ============================================
+// PATCH /alerts/:id/resolve
+// ============================================
 //
-// Only permitted when a fresh database
-// check no longer detects the same issue.
+// Only resolve an alert after a fresh check
+// confirms that its rule is no longer active.
 //
-// This updates the alert record only.
-// It never updates refunds, payments,
-// orders, or seller allocations.
-//
-// =====================================================
+// ============================================
 
 router.patch(
   "/alerts/:id/resolve",
@@ -540,9 +684,20 @@ router.patch(
       });
     }
 
+    let client;
+
     try {
+      client = await pool.connect();
+
+      await client.query("BEGIN");
+
+      await client.query(
+        "SELECT pg_advisory_xact_lock($1)",
+        [SCAN_LOCK_ID]
+      );
+
       const existing =
-        await pool.query(
+        await client.query(
           `
           SELECT
             id,
@@ -552,105 +707,111 @@ router.patch(
           FROM goldmart_admin_alerts
 
           WHERE id = $1
+          FOR UPDATE
           `,
           [id]
         );
 
       if (!existing.rows.length) {
+        await client.query("ROLLBACK");
+
         return res.status(404).json({
           success: false,
           message: "Alert not found.",
         });
       }
 
+      const current =
+        existing.rows[0];
+
       if (
-        existing.rows[0].status ===
-        "resolved"
+        current.status === "resolved"
       ) {
+        await client.query("ROLLBACK");
+
         return res.status(409).json({
           success: false,
-
-          message:
-            "Alert is already resolved.",
+          message: "Alert already resolved.",
         });
       }
 
-      // Check current database conditions.
       const active =
-        await detectIssues();
+        await detectIssues(client);
 
       const stillDetected =
         active.some(
-          (issue) =>
-            issue.alert_key ===
-            existing.rows[0].alert_key
+          (item) =>
+            item.alert_key ===
+            current.alert_key
         );
 
       if (stillDetected) {
+        await client.query("ROLLBACK");
+
         return res.status(409).json({
           success: false,
 
           message:
-            "This issue is still detected " +
-            "in marketplace records. " +
-            "Review the actual issue " +
-            "before resolving its alert.",
+            "Monitoring still detects " +
+            "this issue. Review the " +
+            "underlying records first.",
         });
       }
 
-      const result = await pool.query(
-        `
-        UPDATE goldmart_admin_alerts
+      const result =
+        await client.query(
+          `
+          UPDATE goldmart_admin_alerts
 
-        SET
-          status = 'resolved',
+          SET
+            status = 'resolved',
+            resolved_at = NOW(),
+            updated_at = NOW()
 
-          resolved_at = NOW(),
+          WHERE id = $1
+            AND status <> 'resolved'
 
-          updated_at = NOW()
+          RETURNING
+            id,
+            alert_key,
+            status,
+            resolved_at
+          `,
+          [id]
+        );
 
-        WHERE id = $1
-          AND status <> 'resolved'
-
-        RETURNING
-          id,
-          alert_key,
-          status,
-          resolved_at
-        `,
-        [id]
-      );
-
-      if (!result.rows.length) {
-        return res.status(409).json({
-          success: false,
-
-          message:
-            "Alert status changed. Retry.",
-        });
-      }
+      await client.query("COMMIT");
 
       return res.json({
         success: true,
+
         alert: result.rows[0],
 
         note:
-          "The monitoring alert was resolved. " +
-          "No orders, payments, or refunds " +
-          "were modified.",
+          "Monitoring alert resolved. " +
+          "Underlying marketplace " +
+          "records were not changed.",
       });
     } catch (error) {
-      return sendError(
+      if (client) {
+        try {
+          await client.query("ROLLBACK");
+        } catch (_) {
+          // Best-effort rollback.
+        }
+      }
+
+      return serverError(
         res,
         "resolve",
         error
       );
+    } finally {
+      if (client) {
+        client.release();
+      }
     }
   }
 );
-
-// =====================================================
-// EXPORT ROUTER
-// =====================================================
 
 module.exports = router;
