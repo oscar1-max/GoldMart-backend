@@ -36,6 +36,16 @@ router.post("/", protect, async (req, res) => {
       });
     }
 
+    // Require a completed purchase, limit review content and prevent self-reviews.
+    if (numericSellerId === Number(req.user.id)) {
+      return res.status(400).json({success:false,message:"You cannot review your own store."});
+    }
+    if (review !== undefined && review !== null && typeof review !== "string") {
+      return res.status(400).json({success:false,message:"Review must be text."});
+    }
+    if (typeof review === "string" && review.trim().length > 600) {
+      return res.status(400).json({success:false,message:"Review is too long (600 characters maximum)."});
+    }
     // Make sure the buyer actually bought from this seller.
     const purchaseResult = await pool.query(
       `
@@ -47,6 +57,7 @@ router.post("/", protect, async (req, res) => {
         ON order_items.product_id = products.id
       WHERE orders.id = $1
         AND orders.user_id = $2
+        AND orders.status IN ('delivered','completed')
         AND products.seller_id = $3
       LIMIT 1
       `,
@@ -61,7 +72,7 @@ router.post("/", protect, async (req, res) => {
       return res.status(403).json({
         success: false,
         message:
-          "You can only review a seller you purchased from",
+          "You can review a seller only after your order is delivered",
       });
     }
 

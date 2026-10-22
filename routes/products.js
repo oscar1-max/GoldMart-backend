@@ -11,7 +11,13 @@ router.get("/", async (req, res) => {
         products.*,
         categories.name AS category_name,
         products.seller_id,
-        users.name AS seller_name
+        users.name AS seller_name,
+        COALESCE((
+          SELECT SUM(oi.quantity)
+          FROM order_items oi
+          JOIN orders o ON o.id = oi.order_id
+          WHERE oi.product_id = products.id AND o.status <> 'cancelled'
+        ),0)::int AS sold_count
       FROM products
       LEFT JOIN categories
         ON products.category_id = categories.id
