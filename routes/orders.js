@@ -36,6 +36,7 @@ router.get("/", protect, async (req, res) => {
       SELECT
         id,
         total_amount,
+        currency,
         status,
         created_at
       FROM orders
@@ -116,6 +117,7 @@ router.get(
           o.id,
           o.user_id,
           o.total_amount,
+          o.currency,
           o.delivery,
           COALESCE(f.status, o.status) AS status,
           o.created_at,
@@ -447,6 +449,7 @@ router.get(
           id,
           user_id,
           total_amount,
+          currency,
           status,
           created_at
         FROM orders
