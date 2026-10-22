@@ -61,7 +61,10 @@ const protect = async (req, res, next) => {
 
     next();
   } catch (error) {
-    console.error("Authentication error:", error);
+    if (!["JsonWebTokenError", "TokenExpiredError", "NotBeforeError"].includes(error.name)) {
+      console.error("Authentication service error:", error.message);
+      return res.status(503).json({ success: false, message: "Sign-in service is temporarily unavailable. Please retry; your session has not been cleared." });
+    }
 
     return res.status(401).json({
       success: false,

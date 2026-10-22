@@ -7,6 +7,7 @@ const pool = require("../db");
 const { sendGoldMartEmail } = require("../services/emailService");
 
 const router = express.Router();
+const { protect } = require("../middleware/auth");
 
 const TOKEN_LIFETIME_MINUTES = 30;
 
@@ -210,7 +211,7 @@ router.post("/register", async (req, res) => {
     }
 
     if (
-      name.length > 150 ||
+      name.length > 100 ||
       email.length > 254 ||
       password.length > 1024
     ) {
@@ -615,7 +616,7 @@ router.post("/verify-email/confirm", async (req, res) => {
 // POST /api/auth/switch-role
 // ==========================================
 
-router.post("/switch-role", async (req, res) => {
+router.post("/switch-role", protect, async (req, res) => {
   try {
     const authenticatedUser = getAuthenticatedUser(req);
     const userId = validId(authenticatedUser?.id);
@@ -680,7 +681,7 @@ router.post("/switch-role", async (req, res) => {
 // POST /api/auth/become-seller
 // ==========================================
 
-router.post("/become-seller", async (req, res) => {
+router.post("/become-seller", protect, async (req, res) => {
   try {
     const authenticatedUser = getAuthenticatedUser(req);
     const userId = validId(authenticatedUser?.id);

@@ -5,7 +5,7 @@ const { protect, authorize } = require("../middleware/auth");
 
 const router = express.Router();
 
-const ALLOWED_CURRENCIES = ["USD", "NGN", "EUR", "GBP"];
+const ALLOWED_CURRENCIES = ["USD", "NGN"];
 
 // =====================================================
 // SELLER DASHBOARD STATS
@@ -202,7 +202,7 @@ router.post(
         stock = 0,
       } = req.body;
 
-      if (!name || price === undefined) {
+      if (typeof name !== "string" || !name.trim() || name.length > 255 || price === undefined) {
         return res.status(400).json({
           success: false,
           message: "Product name and price are required",
@@ -215,7 +215,7 @@ router.post(
 
       if (
         !Number.isFinite(numericPrice) ||
-        numericPrice < 0
+        numericPrice <= 0 || numericPrice > 9999999999.99 || Math.abs(numericPrice * 100 - Math.round(numericPrice * 100)) > 0.0001
       ) {
         return res.status(400).json({
           success: false,
@@ -229,7 +229,7 @@ router.post(
         return res.status(400).json({
           success: false,
           message:
-            "Invalid currency. Use USD, NGN, EUR or GBP.",
+            "Checkout supports USD or NGN.",
         });
       }
 
@@ -263,7 +263,7 @@ router.post(
         `,
         [
           name.trim(),
-          description?.trim() || null,
+          typeof description === "string" ? description.trim() : null,
           numericPrice,
           productCurrency,
           image_url || null,
@@ -316,7 +316,7 @@ router.put(
       } = req.body;
 
       if (
-        !name ||
+        typeof name !== "string" || !name.trim() || name.length > 255 ||
         price === undefined ||
         stock === undefined
       ) {
@@ -333,7 +333,7 @@ router.put(
 
       if (
         !Number.isFinite(numericPrice) ||
-        numericPrice < 0
+        numericPrice <= 0 || numericPrice > 9999999999.99 || Math.abs(numericPrice * 100 - Math.round(numericPrice * 100)) > 0.0001
       ) {
         return res.status(400).json({
           success: false,
@@ -347,7 +347,7 @@ router.put(
         return res.status(400).json({
           success: false,
           message:
-            "Invalid currency. Use USD, NGN, EUR or GBP.",
+            "Checkout supports USD or NGN.",
         });
       }
 
@@ -381,7 +381,7 @@ router.put(
           `,
           [
             name.trim(),
-            description?.trim() || null,
+            typeof description === "string" ? description.trim() : null,
             numericPrice,
             productCurrency,
             image_url || null,
@@ -408,7 +408,7 @@ router.put(
           `,
           [
             name.trim(),
-            description?.trim() || null,
+            typeof description === "string" ? description.trim() : null,
             numericPrice,
             productCurrency,
             image_url || null,
@@ -460,6 +460,9 @@ router.delete(
     try {
       const { id } = req.params;
 
+      const ordered = await pool.query(`SELECT 1 FROM order_items WHERE product_id=$1 LIMIT 1`, [id]);
+      if (ordered.rows.length) return res.status(409).json({ success: false,
+        message: "This product has order history. Set its stock to zero instead of deleting it." });
       let result;
 
       if (req.user.role === "admin") {
