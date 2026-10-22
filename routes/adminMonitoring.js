@@ -394,6 +394,28 @@ router.get("/alerts", async (req, res) => {
 //
 // ============================================
 
+// Inspect matching record identifiers; require administrator access.
+router.get("/alerts/:id/evidence",async(req,res)=>{
+  const id=parseId(req.params.id);
+  if(!id)return res.status(400).json({success:false,message:"Invalid alert ID."});
+  try{
+    const found=await pool.query("SELECT id,alert_key,title FROM goldmart_admin_alerts WHERE id=$1",[id]);
+    if(!found.rows.length)return res.status(404).json({success:false,message:"Alert not found."});
+    const key=found.rows[0].alert_key;
+    const queries={
+      refund_review:"SELECT id,order_id,status,created_at FROM goldmart_refund_requests WHERE status='requested' ORDER BY created_at DESC LIMIT 30",
+      refund_processing:"SELECT id,order_id,status,created_at FROM goldmart_refund_requests WHERE status='refund_pending' ORDER BY created_at DESC LIMIT 30",
+      orders_over_7_days:"SELECT id,status,created_at FROM orders WHERE status='processing' AND created_at < NOW()-INTERVAL '7 days' ORDER BY created_at ASC LIMIT 30",
+      orders_72h_to_7d:"SELECT id,status,created_at FROM orders WHERE status='processing' AND created_at < NOW()-INTERVAL '72 hours' AND created_at >= NOW()-INTERVAL '7 days' ORDER BY created_at ASC LIMIT 30",
+      allocations_blocked:"SELECT id,order_id,status,created_at FROM seller_order_allocations WHERE status='blocked' ORDER BY created_at DESC LIMIT 30",
+      allocations_waiting:"SELECT id,order_id,status,created_at FROM seller_order_allocations WHERE status='pending_review' ORDER BY created_at DESC LIMIT 30"
+    };
+    if(!Object.prototype.hasOwnProperty.call(queries,key))return res.status(404).json({success:false,message:"Record details unavailable for this alert type."});
+    const records=await pool.query(queries[key]);
+    return res.json({success:true,alert_key:key,records:records.rows,limited:true});
+  }catch(error){return serverError(res,"alert evidence",error);}
+});
+
 router.post("/scan", async (req, res) => {
   let client;
 

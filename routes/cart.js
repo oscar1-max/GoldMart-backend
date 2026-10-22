@@ -17,7 +17,7 @@ router.get("/", protect, async (req, res) => {
         cart_items.quantity,
         products.id AS product_id,
         products.name,
-        products.price,
+        CASE WHEN products.deal_price > 0 AND products.deal_price < products.price AND products.deal_start_at <= NOW() AND products.deal_end_at > NOW() THEN products.deal_price ELSE products.price END AS price,
         products.currency,
         products.image_url,
         products.stock,
@@ -78,7 +78,7 @@ router.post("/", protect, async (req, res) => {
 
     const productResult = await pool.query(
       `
-      SELECT id, stock, price, currency
+      SELECT id, stock, CASE WHEN deal_price > 0 AND deal_price < price AND deal_start_at <= NOW() AND deal_end_at > NOW() THEN deal_price ELSE price END AS price, currency
       FROM products
       WHERE id = $1 AND is_active = TRUE
       `,

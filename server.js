@@ -375,6 +375,9 @@ async function setupDatabase() {
   try {
     const migrations = [
       `ALTER TABLE products ADD COLUMN IF NOT EXISTS currency VARCHAR(3) NOT NULL DEFAULT 'USD';`,
+      `ALTER TABLE products ADD COLUMN IF NOT EXISTS deal_price NUMERIC(12,2);`,
+      `ALTER TABLE products ADD COLUMN IF NOT EXISTS deal_start_at TIMESTAMPTZ;`,
+      `ALTER TABLE products ADD COLUMN IF NOT EXISTS deal_end_at TIMESTAMPTZ;`,
       `ALTER TABLE products ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;`,
       `CREATE INDEX IF NOT EXISTS products_active_idx ON products(is_active, id DESC);`,
 
