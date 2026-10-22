@@ -598,7 +598,6 @@ async function setupDatabase() {
       "Database setup error:",
       error.message
     );
-    throw error;
   }
 }
 
