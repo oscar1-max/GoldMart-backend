@@ -333,7 +333,7 @@ router.post(
         SELECT
           p.id AS product_id,
           p.name,
-          p.price,
+          CASE WHEN p.deal_price > 0 AND p.deal_price < p.price AND p.deal_start_at <= NOW() AND p.deal_end_at > NOW() THEN p.deal_price ELSE p.price END AS price,
           p.currency,
           p.stock,
           p.seller_id,
