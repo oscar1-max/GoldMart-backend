@@ -345,7 +345,7 @@ router.post(
           ON ci.cart_id = c.id
 
         JOIN products p
-          ON p.id = ci.product_id
+          ON p.id = ci.product_id AND p.is_active = TRUE
 
         WHERE c.user_id = $1
 

@@ -17,6 +17,7 @@ router.get("/", async (req, res) => {
         ON products.category_id = categories.id
       LEFT JOIN users
         ON products.seller_id = users.id
+      WHERE products.is_active = TRUE
       ORDER BY products.id DESC
     `);
 
@@ -51,7 +52,7 @@ router.get("/:id", async (req, res) => {
         ON products.category_id = categories.id
       LEFT JOIN users
         ON products.seller_id = users.id
-      WHERE products.id = $1
+      WHERE products.id = $1 AND products.is_active = TRUE
       `,
       [id]
     );

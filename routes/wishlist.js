@@ -18,7 +18,7 @@ router.get("/", async (req, res) => {
         products.*
       FROM wishlist_items
       INNER JOIN products
-        ON wishlist_items.product_id = products.id
+        ON wishlist_items.product_id = products.id AND products.is_active = TRUE
       WHERE wishlist_items.user_id = $1
       ORDER BY wishlist_items.created_at DESC
       `,
@@ -88,7 +88,7 @@ router.post("/", async (req, res) => {
       `
       SELECT id
       FROM products
-      WHERE id = $1
+      WHERE id = $1 AND is_active = TRUE
       LIMIT 1
       `,
       [productId]
