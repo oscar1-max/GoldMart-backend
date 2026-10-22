@@ -58,12 +58,28 @@ router.get(
         [sellerId]
       );
 
+      // Verified seller allocations use minor units and record their OWN currency.
+      // Do not sum USD and NGN together or label a mixed total as naira.
+      const currencyResult = await pool.query(
+        `
+        SELECT currency, SUM(gross_minor)::text AS gross_minor
+        FROM seller_order_allocations
+        WHERE seller_id = $1 AND status NOT IN ('voided', 'blocked')
+        GROUP BY currency
+        ORDER BY currency
+        `, [sellerId]
+      );
       res.json({
         success: true,
         stats: {
           products: productsResult.rows[0].count,
           orders: ordersResult.rows[0].count,
           sales: salesResult.rows[0].total,
+          sales_by_currency: currencyResult.rows.map(row => ({
+            currency: row.currency,
+            amount: (Number(row.gross_minor) / 100).toFixed(2),
+          })),
+          sales_note: "Verified allocation records, not withdrawable payouts.",
         },
       });
     } catch (error) {
