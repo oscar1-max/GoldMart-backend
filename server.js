@@ -578,6 +578,13 @@ async function setupDatabase() {
 
       `CREATE INDEX IF NOT EXISTS messages_created_at_idx
        ON messages(created_at);`,
+
+      // The notifications route joins conversations using this field.
+      // Older GoldMart databases had notifications but no conversation_id.
+      // Add it AFTER the conversations table has been created.
+      `ALTER TABLE notifications
+       ADD COLUMN IF NOT EXISTS conversation_id INTEGER
+       REFERENCES conversations(id) ON DELETE SET NULL;`,
     ];
 
     for (const sql of migrations) {
