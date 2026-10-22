@@ -27,7 +27,7 @@ router.get("/", protect, async (req, res) => {
         ON carts.id = cart_items.cart_id
       INNER JOIN products
         ON cart_items.product_id = products.id
-      WHERE carts.user_id = $1
+      WHERE carts.user_id = $1 AND products.is_active = TRUE
       ORDER BY cart_items.id DESC
       `,
       [req.user.id]
@@ -80,7 +80,7 @@ router.post("/", protect, async (req, res) => {
       `
       SELECT id, stock, price, currency
       FROM products
-      WHERE id = $1
+      WHERE id = $1 AND is_active = TRUE
       `,
       [productId]
     );
