@@ -23,7 +23,7 @@ router.get(
         `
         SELECT COUNT(*)::int AS count
         FROM products
-        WHERE seller_id = $1
+        WHERE seller_id = $1 AND is_active = TRUE
         `,
         [sellerId]
       );
@@ -457,56 +457,39 @@ router.delete(
   protect,
   authorize("seller", "admin"),
   async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isSafeInteger(id) || id <= 0) return res.status(400).json({success:false,message:"Invalid product ID."});
     try {
-      const { id } = req.params;
-
-      let result;
-
-      if (req.user.role === "admin") {
-        result = await pool.query(
-          `
-          DELETE FROM products
-          WHERE id = $1
-          RETURNING *
-          `,
-          [id]
-        );
-      } else {
-        result = await pool.query(
-          `
-          DELETE FROM products
-          WHERE id = $1
-            AND seller_id = $2
-          RETURNING *
-          `,
-          [id, req.user.id]
-        );
-      }
-
-      if (result.rows.length === 0) {
-        return res.status(404).json({
-          success: false,
-          message:
-            "Product not found or you do not own this product",
-        });
-      }
-
-      res.json({
-        success: true,
-        message: "Product deleted successfully",
-        product: result.rows[0],
-      });
-    } catch (error) {
-      console.error(
-        "Delete seller product error:",
-        error
+      const result = await pool.query(
+        `UPDATE products SET is_active = FALSE WHERE id = $1 AND seller_id = $2 AND is_active = TRUE RETURNING id, name`,
+        [id, req.user.id]
       );
+      if (!result.rows.length) return res.status(404).json({success:false,message:"Active product not found in your store."});
+      res.json({success:true,message:"Product removed from the storefront. Historical orders are preserved.",product:result.rows[0]});
+    } catch(error) {
+      console.error("Remove product error:",error);
+      res.status(500).json({success:false,message:"Unable to remove product."});
+    }
+  }
+);
 
-      res.status(500).json({
-        success: false,
-        message:
-          error.message || "Failed to delete product",
-      });
+router.patch(
+  "/products/:id/restore",
+  protect,
+  authorize("seller", "admin"),
+  async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isSafeInteger(id) || id <= 0) return res.status(400).json({success:false,message:"Invalid product ID."});
+    try {
+      const result = await pool.query(
+        `UPDATE products SET is_active = TRUE WHERE id = $1 AND seller_id = $2 AND is_active = FALSE RETURNING id, name`,
+        [id, req.user.id]
+      );
+      if (!result.rows.length) return res.status(404).json({success:false,message:"Removed product not found in your store."});
+      res.json({success:true,message:"Product restored to storefront.",product:result.rows[0]});
+    } catch(error) {
+      console.error("Restore product error:",error);
+      res.status(500).json({success:false,message:"Unable to restore product."});
     }
   }
 );
