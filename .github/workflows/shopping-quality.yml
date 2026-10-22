@@ -1,0 +1,17 @@
+name: GoldMart backend quality checks
+on:
+  pull_request:
+  push:
+    branches: [feature/goldmart-nine-shopping-improvements-20261022]
+permissions:
+  contents: read
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install --no-audit --no-fund
+      - run: for file in server.js routes/*.js; do node --check "$file"; done
