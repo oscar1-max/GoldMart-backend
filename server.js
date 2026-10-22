@@ -578,6 +578,8 @@ async function setupDatabase() {
 
       `CREATE INDEX IF NOT EXISTS messages_created_at_idx
        ON messages(created_at);`,
+      // Earlier installations lack this field; notifications queries rely on it.
+      `ALTER TABLE notifications ADD COLUMN IF NOT EXISTS conversation_id INTEGER REFERENCES conversations(id) ON DELETE SET NULL;`,
     ];
 
     for (const sql of migrations) {
