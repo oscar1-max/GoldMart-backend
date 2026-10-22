@@ -465,6 +465,40 @@ router.put(
 );
 
 // =====================================================
+// SELLER SCHEDULED FLASH DEALS (storefront and checkout use server prices)
+// =====================================================
+router.patch("/products/:id/deal", protect, authorize("seller","admin"), async (req,res) => {
+  const id = Number(req.params.id);
+  if (!Number.isSafeInteger(id) || id < 1) return res.status(400).json({success:false,message:"Invalid product ID."});
+  try {
+    if (req.body?.clear === true) {
+      const cleared = await pool.query(
+        "UPDATE products SET deal_price=NULL,deal_start_at=NULL,deal_end_at=NULL WHERE id=$1 AND seller_id=$2 RETURNING *",
+        [id,req.user.id]
+      );
+      if (!cleared.rows.length) return res.status(404).json({success:false,message:"Product not found in your store."});
+      return res.json({success:true,product:cleared.rows[0],message:"Flash deal removed."});
+    }
+    const amount = Number(req.body?.deal_price);
+    const start = new Date(req.body?.start_at || Date.now());
+    const end = new Date(req.body?.end_at);
+    if (!Number.isFinite(amount) || amount <= 0 || !Number.isInteger(Math.round(amount*100)) || Math.abs(Math.round(amount*100)/100-amount)>0.00001 ||
+        !Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime()) ||
+        end <= start || end.getTime() <= Date.now() || end.getTime()-start.getTime()>30*24*60*60*1000 ||
+        start.getTime() < Date.now()-10*60*1000) {
+      return res.status(400).json({success:false,message:"Enter a valid lower deal price and a start/end time within 30 days."});
+    }
+    const product = await pool.query("SELECT price,currency FROM products WHERE id=$1 AND seller_id=$2 AND is_active=TRUE",[id,req.user.id]);
+    if (!product.rows.length) return res.status(404).json({success:false,message:"Active product not found in your store."});
+    if (!["NGN","USD"].includes(product.rows[0].currency)) return res.status(400).json({success:false,message:"Flash deals require USD or NGN checkout currency."});
+    if (amount>=Number(product.rows[0].price)) return res.status(400).json({success:false,message:"Deal price must be lower than the regular price."});
+    const updated = await pool.query("UPDATE products SET deal_price=$1,deal_start_at=$2,deal_end_at=$3 WHERE id=$4 AND seller_id=$5 AND is_active=TRUE AND price>$1 RETURNING *",[amount,start.toISOString(),end.toISOString(),id,req.user.id]);
+    if (!updated.rows.length) return res.status(409).json({success:false,message:"Product or price changed. Refresh and retry."});
+    return res.json({success:true,product:updated.rows[0],message:"Flash deal scheduled."});
+  } catch(error) {console.error("Seller flash deal error:",error);return res.status(500).json({success:false,message:"Could not update flash deal."});}
+});
+
+// =====================================================
 // DELETE SELLER PRODUCT
 // =====================================================
 
