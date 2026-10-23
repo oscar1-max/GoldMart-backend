@@ -18,16 +18,16 @@ function buildHtml(message) {
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
       </head>
-      <body style="margin:0;padding:24px;background:#f7f7f7;font-family:Arial,sans-serif;color:#222;">
-        <div style="max-width:560px;margin:auto;background:white;border:1px solid #eee;border-radius:12px;padding:24px;">
-          <h2 style="color:#997000;margin-top:0;">GoldMart</h2>
+      <body style="margin:0;padding:24px;background:#F7F7F5;font-family:Arial,sans-serif;color:#0F0F0F;">
+        <div style="max-width:560px;margin:auto;background:#FFFFFF;border:1px solid #F0E6C0;border-radius:12px;overflow:hidden;">
+          <div style="background:#0A1F1A;padding:24px;border-bottom:3px solid #D4AF37;"><h2 style="color:#D4AF37;margin:0;font-size:26px;letter-spacing:-0.6px;">GoldMart</h2></div><div style="padding:24px;">
           <p style="white-space:pre-line;line-height:1.7;">${escapeHtml(message)}</p>
-          <hr style="border:0;border-top:1px solid #eee;margin:24px 0;" />
-          <p style="font-size:12px;color:#777;">
+          <hr style="border:0;border-top:1px solid #F0E6C0;margin:24px 0;" />
+          <p style="font-size:12px;color:#57534A;">
             This is an automated notification from GoldMart.
             Never share your password or payment verification codes.
           </p>
-        </div>
+        </div></div>
       </body>
     </html>
   `;
