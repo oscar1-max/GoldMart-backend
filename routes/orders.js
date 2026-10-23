@@ -382,6 +382,8 @@ router.post("/", protect, async (req, res) => {
           seller_id,
           currency,
           gross_minor,
+          commission_minor,
+          seller_net_minor,
           status
         )
         VALUES (
@@ -390,6 +392,8 @@ router.post("/", protect, async (req, res) => {
           $3,
           $4,
           $5,
+          $6,
+          $7,
           'pending_review'
         )
         `,
@@ -399,6 +403,8 @@ router.post("/", protect, async (req, res) => {
           sellerId,
           orderCurrency,
           String(grossMinor),
+          String(Math.round(grossMinor * 6 / 100)),
+          String(grossMinor - Math.round(grossMinor * 6 / 100)),
         ]
       );
     }
