@@ -375,8 +375,6 @@ async function setupDatabase() {
   try {
     const migrations = [
       `ALTER TABLE products ADD COLUMN IF NOT EXISTS currency VARCHAR(3) NOT NULL DEFAULT 'USD';`,
-      `ALTER TABLE seller_order_allocations ADD COLUMN IF NOT EXISTS commission_minor BIGINT NOT NULL DEFAULT 0;`,
-      `ALTER TABLE seller_order_allocations ADD COLUMN IF NOT EXISTS seller_net_minor BIGINT;`,
       `ALTER TABLE products ADD COLUMN IF NOT EXISTS deal_price NUMERIC(12,2);`,
       `ALTER TABLE products ADD COLUMN IF NOT EXISTS deal_start_at TIMESTAMPTZ;`,
       `ALTER TABLE products ADD COLUMN IF NOT EXISTS deal_end_at TIMESTAMPTZ;`,
@@ -478,6 +476,9 @@ async function setupDatabase() {
         UNIQUE (order_id, seller_id),
         UNIQUE (payment_id, seller_id)
       );`,
+
+      `ALTER TABLE seller_order_allocations ADD COLUMN IF NOT EXISTS commission_minor BIGINT NOT NULL DEFAULT 0;`,
+      `ALTER TABLE seller_order_allocations ADD COLUMN IF NOT EXISTS seller_net_minor BIGINT;`,
 
       `CREATE INDEX IF NOT EXISTS seller_order_allocations_seller_idx
        ON seller_order_allocations(seller_id);`,
