@@ -477,6 +477,9 @@ async function setupDatabase() {
         UNIQUE (payment_id, seller_id)
       );`,
 
+      `ALTER TABLE seller_order_allocations ADD COLUMN IF NOT EXISTS commission_minor BIGINT NOT NULL DEFAULT 0;`,
+      `ALTER TABLE seller_order_allocations ADD COLUMN IF NOT EXISTS seller_net_minor BIGINT;`,
+
       `CREATE INDEX IF NOT EXISTS seller_order_allocations_seller_idx
        ON seller_order_allocations(seller_id);`,
 

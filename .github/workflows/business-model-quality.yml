@@ -1,0 +1,17 @@
+name: Business model syntax checks
+on:
+  pull_request:
+  push:
+    branches: [feature/goldmart-business-model-premium-20261023]
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install --no-audit --no-fund
+      - run: for f in server.js routes/*.js; do node --check "$f"; done
