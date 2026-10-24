@@ -1,0 +1,41 @@
+name: Payment verification tests
+
+on:
+  pull_request:
+    paths:
+      - "utils/paystackPaymentValidation.js"
+      - "tests/paystackVerification.test.js"
+      - "tests/orderFinalization.test.js"
+      - "routes/payments.js"
+      - "server.js"
+      - "routes/orders.js"
+      - "services/finalizePaidOrder.js"
+      - ".github/workflows/payment-verification.yml"
+  push:
+    paths:
+      - "utils/paystackPaymentValidation.js"
+      - "tests/paystackVerification.test.js"
+      - "tests/orderFinalization.test.js"
+      - "routes/payments.js"
+      - "server.js"
+      - "routes/orders.js"
+      - "services/finalizePaidOrder.js"
+      - ".github/workflows/payment-verification.yml"
+
+jobs:
+  verify-payments:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Check JavaScript syntax
+        run: |
+          node --check server.js
+          node --check routes/payments.js
+          node --check routes/orders.js
+          node --check services/finalizePaidOrder.js
+          node --check utils/paystackPaymentValidation.js
+      - name: Run payment validation tests
+        run: node --test tests/paystackVerification.test.js tests/orderFinalization.test.js
