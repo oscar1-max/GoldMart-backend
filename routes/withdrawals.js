@@ -43,8 +43,9 @@ router.get("/seller",authorize("seller","admin"),async(req,res)=>{
     const result=await pool.query([
       "SELECT a.id AS allocation_id,a.order_id,a.seller_id,a.currency,a.gross_minor::text,a.commission_minor::text,",
       "a.seller_net_minor::text,a.status AS allocation_status,o.user_id AS buyer_id,o.status AS order_status,",
-      "p.status AS payment_status,u.is_banned AS seller_is_banned,dc.confirmed_at AS buyer_confirmed_at,",
+      "p.status AS payment_status,p.user_id AS payment_buyer_id,p.order_id AS paid_order_id,u.is_banned AS seller_is_banned,dc.confirmed_at AS buyer_confirmed_at,dc.buyer_id AS confirmed_buyer_id,",
       "(SELECT COUNT(*)::int FROM goldmart_refund_requests r WHERE r.order_id=a.order_id) AS refund_count,",
+      "(SELECT COUNT(*)::int FROM seller_order_allocations sa WHERE sa.order_id=a.order_id) AS seller_count,",
       "w.id AS withdrawal_id,w.status AS withdrawal_status,w.decision_reason,w.decision_source,w.created_at AS requested_at",
       "FROM seller_order_allocations a JOIN orders o ON o.id=a.order_id JOIN payments p ON p.id=a.payment_id",
       "JOIN users u ON u.id=a.seller_id LEFT JOIN goldmart_delivery_confirmations dc ON dc.order_id=a.order_id",
@@ -144,6 +145,8 @@ router.post("/admin/:id/decision",adminOnly,requireTest,async(req,res)=>{
       const locked=await client.query("SELECT * FROM goldmart_withdrawal_requests WHERE id=$1 FOR UPDATE",[id]);
       const w=locked.rows[0];
       if(w.status==="rejected")return {code:409,body:{success:false,message:"Rejected requests cannot be reopened automatically."}};
+      if (Number(w.seller_id) === Number(req.user.id) || Number((await detail(client,w.allocation_id))?.buyer_id) === Number(req.user.id))
+        return {code:403,body:{success:false,message:"Admins cannot decide their own sales or purchases."}};
       const safety=review(await detail(client,w.allocation_id));
       if(action==="approve"&&safety.status!=="approved_test")
         return {code:409,body:{success:false,message:"Safety checks failed: "+safety.reason}};
