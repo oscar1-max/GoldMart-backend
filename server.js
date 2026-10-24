@@ -12,6 +12,7 @@ const messagesRoutes = require("./routes/messages");
 const testDatabaseConnection = require("./database");
 const pool = require("./db");
 const { matchesVerifiedPayment } = require("./utils/paystackPaymentValidation");
+const { finalizePaidOrder } = require("./services/finalizePaidOrder");
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -177,6 +178,7 @@ app.post(
             SELECT
               id,
               user_id,
+              order_id,
               reference,
               amount,
               currency,
@@ -205,7 +207,7 @@ app.post(
         // not create duplicate effects.
 
         if (
-          payment.status === "success"
+          payment.status === "success" && payment.order_id
         ) {
           await client.query(
             "COMMIT"
@@ -250,22 +252,19 @@ app.post(
           });
         }
 
-        // Update payment verification only.
-        // Existing order endpoint remains
-        // responsible for creating orders
-        // and seller allocations.
+        // Verified charge and order creation share the same transaction.
+        // If finalization fails, rollback makes Paystack retry the webhook.
+        // An already-confirmed payment without an order is also recoverable.
+        if (payment.status !== "success") {
+          await client.query(
+            "UPDATE payments SET status = 'success', updated_at = NOW() WHERE id = $1",
+            [payment.id]
+          );
+          payment.status = "success";
+        }
 
-        await client.query(
-          `
-          UPDATE payments
-          SET
-            status = 'success',
-            updated_at = NOW()
-          WHERE id = $1
-            AND status <> 'success'
-          `,
-          [payment.id]
-        );
+        const finalized = await finalizePaidOrder(client, payment);
+        console.log("Paystack test webhook finalized order", finalized.order.id);
 
         await client.query(
           "COMMIT"
