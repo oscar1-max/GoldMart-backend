@@ -5,6 +5,7 @@ on:
     paths:
       - "utils/paystackPaymentValidation.js"
       - "tests/paystackVerification.test.js"
+      - "tests/orderFinalization.test.js"
       - "routes/payments.js"
       - "server.js"
       - "routes/orders.js"
@@ -14,6 +15,7 @@ on:
     paths:
       - "utils/paystackPaymentValidation.js"
       - "tests/paystackVerification.test.js"
+      - "tests/orderFinalization.test.js"
       - "routes/payments.js"
       - "server.js"
       - "routes/orders.js"
@@ -36,4 +38,4 @@ jobs:
           node --check services/finalizePaidOrder.js
           node --check utils/paystackPaymentValidation.js
       - name: Run payment validation tests
-        run: node --test tests/paystackVerification.test.js
+        run: node --test tests/paystackVerification.test.js tests/orderFinalization.test.js
