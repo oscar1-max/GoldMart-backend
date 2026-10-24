@@ -427,6 +427,35 @@ async function setupDatabase() {
       `CREATE INDEX IF NOT EXISTS seller_order_allocations_seller_status_idx
        ON seller_order_allocations(seller_id, status);`,
 
+      // Buyer confirmation already has an API; ensure new databases have its table.
+      `CREATE TABLE IF NOT EXISTS goldmart_delivery_confirmations (
+        order_id INTEGER PRIMARY KEY REFERENCES orders(id) ON DELETE CASCADE,
+        buyer_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        confirmed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );`,
+
+      `CREATE TABLE IF NOT EXISTS goldmart_withdrawal_requests (
+        id BIGSERIAL PRIMARY KEY,
+        allocation_id BIGINT NOT NULL UNIQUE REFERENCES seller_order_allocations(id) ON DELETE RESTRICT,
+        order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE RESTRICT,
+        payment_id INTEGER NOT NULL REFERENCES payments(id) ON DELETE RESTRICT,
+        seller_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        currency VARCHAR(3) NOT NULL CHECK (currency IN ('USD', 'NGN')),
+        amount_minor BIGINT NOT NULL CHECK (amount_minor > 0),
+        status VARCHAR(30) NOT NULL DEFAULT 'pending_review'
+          CHECK (status IN ('pending_review', 'approved_test', 'rejected')),
+        decision_reason TEXT NOT NULL,
+        decision_source VARCHAR(30) NOT NULL DEFAULT 'automatic_rules'
+          CHECK (decision_source IN ('automatic_rules', 'admin')),
+        reviewed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );`,
+      `CREATE INDEX IF NOT EXISTS goldmart_withdrawal_requests_seller_idx
+       ON goldmart_withdrawal_requests(seller_id, created_at DESC);`,
+      `CREATE INDEX IF NOT EXISTS goldmart_withdrawal_requests_pending_idx
+       ON goldmart_withdrawal_requests(status, decision_source);`,
+
       `ALTER TABLE users
        ADD COLUMN IF NOT EXISTS is_banned BOOLEAN NOT NULL DEFAULT FALSE;`,
 
