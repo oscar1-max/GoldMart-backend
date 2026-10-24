@@ -3,6 +3,7 @@ const express = require("express");
 const crypto = require("crypto");
 const pool = require("../db");
 const { protect } = require("../middleware/auth");
+const { matchesVerifiedPayment } = require("../utils/paystackPaymentValidation");
 
 const router = express.Router();
 
@@ -139,115 +140,6 @@ async function fetchPaystack(
 // =====================================================
 // VALIDATE VERIFIED PAYMENT DETAILS
 // =====================================================
-
-function matchesVerifiedPayment(
-  transaction,
-  payment
-) {
-  const snapshot =
-    payment.checkout_snapshot;
-
-  if (
-    !snapshot ||
-    typeof snapshot !== "object"
-  ) {
-    return false;
-  }
-
-  const expected =
-    validKobo(
-      snapshot.expected_kobo
-    );
-
-  const providerAmount =
-    validKobo(
-      transaction.amount
-    );
-
-  const metadata =
-    transaction.metadata;
-
-  if (
-    !expected ||
-    !providerAmount ||
-    !metadata ||
-    typeof metadata !== "object"
-  ) {
-    return false;
-  }
-
-  let storedAmount;
-
-  try {
-    storedAmount = toMinor(
-      payment.amount
-    );
-  } catch {
-    return false;
-  }
-
-  return (
-    transaction.status === "success" &&
-
-    transaction.domain === "test" &&
-
-    transaction.reference ===
-      payment.reference &&
-
-    currencyOf(
-      transaction.currency
-    ) === "NGN" &&
-
-    currencyOf(
-      payment.currency
-    ) === "NGN" &&
-
-    providerAmount === expected &&
-
-    storedAmount === expected &&
-
-    metadata.goldmart_reference ===
-      payment.reference &&
-
-    Number(
-      metadata.goldmart_user_id
-    ) === Number(
-      payment.user_id
-    ) &&
-
-    String(
-      metadata.goldmart_order_currency
-    ) === String(
-      snapshot.order_currency
-    ) &&
-
-    Number(
-      metadata.goldmart_order_total_minor
-    ) === Number(
-      snapshot.order_total_minor
-    ) &&
-
-    Number.isSafeInteger(
-      Number(
-        snapshot.order_total_minor
-      )
-    ) &&
-
-    Number(
-      snapshot.order_total_minor
-    ) > 0 &&
-
-    ["USD", "NGN"].includes(
-      snapshot.order_currency
-    ) &&
-
-    Array.isArray(
-      snapshot.items
-    ) &&
-
-    snapshot.items.length > 0
-  );
-}
 
 // =====================================================
 // PAYMENT CONFIGURATION
