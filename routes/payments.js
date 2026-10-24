@@ -349,6 +349,14 @@ router.post(
         orderTotalMinor +=
           lineTotal;
 
+        const sellerId = Number(row.seller_id);
+        if (!Number.isSafeInteger(sellerId) || sellerId <= 0) {
+          return res.status(409).json({
+            success: false,
+            message: "This item is not linked to an active seller. Remove it from your cart before paying."
+          });
+        }
+
         items.push({
           product_id:
             Number(
@@ -358,12 +366,7 @@ router.post(
           name:
             String(row.name),
 
-          seller_id:
-            row.seller_id == null
-              ? null
-              : Number(
-                  row.seller_id
-                ),
+          seller_id: sellerId,
 
           quantity,
 
