@@ -13,6 +13,7 @@ router.get("/", async (req, res) => {
         CASE WHEN products.deal_price > 0 AND products.deal_price < products.price AND products.deal_start_at <= NOW() AND products.deal_end_at > NOW() THEN products.deal_price ELSE products.price END AS price,
         (products.deal_price > 0 AND products.deal_price < products.price AND products.deal_start_at <= NOW() AND products.deal_end_at > NOW()) AS is_deal,
         categories.name AS category_name,
+        parent_category.name AS category_parent_name,
         products.seller_id,
         users.name AS seller_name,
         COALESCE((
@@ -24,6 +25,7 @@ router.get("/", async (req, res) => {
       FROM products
       LEFT JOIN categories
         ON products.category_id = categories.id
+      LEFT JOIN categories parent_category ON categories.parent_id = parent_category.id
       LEFT JOIN users
         ON products.seller_id = users.id
       WHERE products.is_active = TRUE
@@ -57,11 +59,13 @@ router.get("/:id", async (req, res) => {
         CASE WHEN products.deal_price > 0 AND products.deal_price < products.price AND products.deal_start_at <= NOW() AND products.deal_end_at > NOW() THEN products.deal_price ELSE products.price END AS price,
         (products.deal_price > 0 AND products.deal_price < products.price AND products.deal_start_at <= NOW() AND products.deal_end_at > NOW()) AS is_deal,
         categories.name AS category_name,
+        parent_category.name AS category_parent_name,
         products.seller_id,
         users.name AS seller_name
       FROM products
       LEFT JOIN categories
         ON products.category_id = categories.id
+      LEFT JOIN categories parent_category ON categories.parent_id = parent_category.id
       LEFT JOIN users
         ON products.seller_id = users.id
       WHERE products.id = $1 AND products.is_active = TRUE
