@@ -14,6 +14,7 @@ const cartRoutes = require("./cart");
 const orderRoutes = require("./orders");
 const paymentRoutes = require("./payments");
 const sellerRoutes = require("./seller");
+const withdrawalRoutes = require("./withdrawals");
 const reviewRoutes = require("./reviews");
 const notificationRoutes = require("./notifications");
 
@@ -107,6 +108,9 @@ router.use("/orders", orderRoutes);
 router.use("/payments", paymentRoutes);
 
 router.use("/seller", sellerRoutes);
+
+// Seller withdrawal simulation and admin review: no bank transfers.
+router.use("/withdrawals", withdrawalRoutes);
 
 router.use("/reviews", reviewRoutes);
 

@@ -315,6 +315,40 @@ async function setupDatabase() {
 
       `UPDATE products SET currency = 'USD' WHERE currency IS NULL OR currency = '';`,
 
+      // New categories are seeded automatically; no manual SQL or CAC is needed.
+      `ALTER TABLE categories ADD COLUMN IF NOT EXISTS parent_id INTEGER REFERENCES categories(id) ON DELETE SET NULL;`,
+      `CREATE INDEX IF NOT EXISTS categories_parent_idx ON categories(parent_id);`,
+      `INSERT INTO categories(name, slug) VALUES
+        ('Phones','phones'),
+        ('Electronics','electronics'),
+        ('Gaming','gaming'),
+        ('Fashion','fashion'),
+        ('Beauty & Cosmetics','beauty-cosmetics'),
+        ('Groceries','groceries'),
+        ('Home & Kitchen','home-kitchen'),
+        ('Jewelry & Accessories','jewelry-accessories'),
+        ('Home Garden','home-garden'),
+        ('Sports Fitness','sports-fitness'),
+        ('Occasions Gifts','occasions-gifts'),
+        ('Apparel','apparel'),
+        ('Hobbies Leisure','hobbies-leisure'),
+        ('Travel Tourism','travel-tourism'),
+        ('Musical Instruments','musical-instruments'),
+        ('Health','health'),
+        ('Sports & Outdoors','sports-outdoors')
+       ON CONFLICT(slug) DO UPDATE SET name=EXCLUDED.name;`,
+      `INSERT INTO categories(name,slug,parent_id)
+       SELECT c.name,c.slug,f.id FROM (VALUES
+        ('Men''s Clothing','mens-clothing'),
+        ('Women''s Clothing','womens-clothing'),
+        ('Men''s Shoes','mens-shoes'),
+        ('Women''s Shoes','womens-shoes'),
+        ('Men''s Underwear & Sleepwear','mens-underwear-sleepwear'),
+        ('Women''s Underwear & Sleepwear','womens-underwear-sleepwear')
+       ) AS c(name,slug)
+       CROSS JOIN (SELECT id FROM categories WHERE slug='fashion') AS f
+       ON CONFLICT(slug) DO UPDATE SET name=EXCLUDED.name,parent_id=EXCLUDED.parent_id;`,
+
       `CREATE TABLE IF NOT EXISTS seller_reviews (
         id SERIAL PRIMARY KEY,
         buyer_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -426,6 +460,35 @@ async function setupDatabase() {
 
       `CREATE INDEX IF NOT EXISTS seller_order_allocations_seller_status_idx
        ON seller_order_allocations(seller_id, status);`,
+
+      // Buyer confirmation already has an API; ensure new databases have its table.
+      `CREATE TABLE IF NOT EXISTS goldmart_delivery_confirmations (
+        order_id INTEGER PRIMARY KEY REFERENCES orders(id) ON DELETE CASCADE,
+        buyer_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        confirmed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );`,
+
+      `CREATE TABLE IF NOT EXISTS goldmart_withdrawal_requests (
+        id BIGSERIAL PRIMARY KEY,
+        allocation_id BIGINT NOT NULL UNIQUE REFERENCES seller_order_allocations(id) ON DELETE RESTRICT,
+        order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE RESTRICT,
+        payment_id INTEGER NOT NULL REFERENCES payments(id) ON DELETE RESTRICT,
+        seller_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        currency VARCHAR(3) NOT NULL CHECK (currency IN ('USD', 'NGN')),
+        amount_minor BIGINT NOT NULL CHECK (amount_minor > 0),
+        status VARCHAR(30) NOT NULL DEFAULT 'pending_review'
+          CHECK (status IN ('pending_review', 'approved_test', 'rejected')),
+        decision_reason TEXT NOT NULL,
+        decision_source VARCHAR(30) NOT NULL DEFAULT 'automatic_rules'
+          CHECK (decision_source IN ('automatic_rules', 'admin')),
+        reviewed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );`,
+      `CREATE INDEX IF NOT EXISTS goldmart_withdrawal_requests_seller_idx
+       ON goldmart_withdrawal_requests(seller_id, created_at DESC);`,
+      `CREATE INDEX IF NOT EXISTS goldmart_withdrawal_requests_pending_idx
+       ON goldmart_withdrawal_requests(status, decision_source);`,
 
       `ALTER TABLE users
        ADD COLUMN IF NOT EXISTS is_banned BOOLEAN NOT NULL DEFAULT FALSE;`,
@@ -626,4 +689,8 @@ app.listen(PORT, async () => {
   await testDatabaseConnection();
 
   await setupDatabase();
+
+  // Review test withdrawal safety even when the owner is offline.
+  const { startWithdrawalReviewWorker } = require("./services/withdrawalReviewWorker");
+  startWithdrawalReviewWorker();
 });
