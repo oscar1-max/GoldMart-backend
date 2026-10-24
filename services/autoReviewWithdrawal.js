@@ -33,6 +33,13 @@ function evaluateWithdrawal(details, now = new Date()) {
       !["pending_review", "eligible"].includes(details.allocation_status)) {
     return pending("Payment or allocation is not eligible.");
   }
+  if (Number(details.seller_count) !== 1) {
+    return pending("Multi-seller orders require separate fulfillment review.");
+  }
+  if (Number(details.payment_buyer_id) !== Number(details.buyer_id) ||
+      Number(details.paid_order_id) !== Number(details.order_id)) {
+    return pending("Payment and order ownership need review.");
+  }
   if (details.order_status !== "delivered") {
     return pending("Order has not been delivered.");
   }
@@ -45,7 +52,8 @@ function evaluateWithdrawal(details, now = new Date()) {
   if (Number(details.refund_count) !== 0) {
     return pending("A refund or cancellation request needs review.");
   }
-  if (!details.buyer_confirmed_at) {
+  if (!details.buyer_confirmed_at ||
+      Number(details.confirmed_buyer_id) !== Number(details.buyer_id)) {
     return pending("Buyer has not independently confirmed delivery.");
   }
   const when = new Date(details.buyer_confirmed_at).getTime();
