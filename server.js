@@ -11,6 +11,7 @@ const messagesRoutes = require("./routes/messages");
 
 const testDatabaseConnection = require("./database");
 const pool = require("./db");
+const { matchesVerifiedPayment } = require("./utils/paystackPaymentValidation");
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -43,26 +44,6 @@ const WEBHOOK_TEST_ENABLED =
   process.env.ENABLE_PAYSTACK_WEBHOOKS_TEST === "true" &&
   String(process.env.PAYSTACK_SECRET_KEY || "")
     .startsWith("sk_test_");
-
-function storedKobo(amount) {
-  const text = String(amount).trim();
-
-  if (!/^\d+(?:\.\d{1,2})?$/.test(text)) {
-    return null;
-  }
-
-  const [whole, fractional = ""] =
-    text.split(".");
-
-  const result =
-    Number(whole) * 100 +
-    Number(fractional.padEnd(2, "0"));
-
-  return Number.isSafeInteger(result) &&
-    result > 0
-    ? result
-    : null;
-}
 
 // This must be registered BEFORE express.json().
 
@@ -235,60 +216,12 @@ app.post(
           });
         }
 
-        const expectedKobo = Number(
-          payment.checkout_snapshot
-            ?.expected_kobo
-        );
-
-        const eventKobo = Number(
-          event.data?.amount
-        );
-
-        const providerKobo = Number(
-          provider.amount
-        );
-
         const valid =
-          provider.status ===
-            "success" &&
-          provider.domain ===
-            "test" &&
-          provider.reference ===
-            reference &&
-          String(
-            provider.currency
-          ).toUpperCase() === "NGN" &&
-          String(
-            event.data?.currency
-          ).toUpperCase() === "NGN" &&
-          String(
-            payment.currency
-          ).toUpperCase() === "NGN" &&
-          Number.isSafeInteger(
-            expectedKobo
-          ) &&
-          expectedKobo > 0 &&
-          Number.isSafeInteger(
-            providerKobo
-          ) &&
-          providerKobo ===
-            expectedKobo &&
-          Number.isSafeInteger(
-            eventKobo
-          ) &&
-          eventKobo ===
-            expectedKobo &&
-          storedKobo(
-            payment.amount
-          ) === expectedKobo &&
-          Number.isSafeInteger(
-            Number(payment.user_id)
-          ) &&
-          Number(
-            provider.metadata
-              ?.goldmart_user_id
-          ) ===
-            Number(payment.user_id);
+          matchesVerifiedPayment(provider, payment) &&
+          event.data?.reference === reference &&
+          String(event.data?.currency || "").toUpperCase() === "NGN" &&
+          Number.isSafeInteger(Number(event.data?.amount)) &&
+          Number(event.data.amount) === Number(provider.amount);
 
         if (!valid) {
           await client.query(
