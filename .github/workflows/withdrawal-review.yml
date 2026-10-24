@@ -12,6 +12,7 @@ on:
       - "routes/index.js"
       - "server.js"
       - "tests/autoReviewWithdrawal.test.js"
+      - "tests/withdrawalFlow.integration.test.js"
       - ".github/workflows/withdrawal-review.yml"
   push:
     branches:
@@ -26,6 +27,7 @@ on:
       - "routes/index.js"
       - "server.js"
       - "tests/autoReviewWithdrawal.test.js"
+      - "tests/withdrawalFlow.integration.test.js"
       - ".github/workflows/withdrawal-review.yml"
 
 permissions:
@@ -34,6 +36,21 @@ permissions:
 jobs:
   withdrawal-safety:
     runs-on: ubuntu-latest
+    timeout-minutes: 7
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: goldmart_test
+          POSTGRES_PASSWORD: local_test_only
+          POSTGRES_DB: goldmart_withdrawal_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U goldmart_test -d goldmart_withdrawal_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -48,5 +65,11 @@ jobs:
           node --check services/autoReviewWithdrawal.js
           node --check services/withdrawalReviewData.js
           node --check services/withdrawalReviewWorker.js
+      - name: Install dependencies for isolated database tests
+        run: npm install --no-audit --no-fund
       - name: Run withdrawal safety rules
         run: node --test tests/autoReviewWithdrawal.test.js
+      - name: Verify seller/admin API against disposable PostgreSQL
+        env:
+          GOLDMART_TEST_DATABASE_URL: postgresql://goldmart_test:local_test_only@127.0.0.1:5432/goldmart_withdrawal_test
+        run: node --test tests/withdrawalFlow.integration.test.js
