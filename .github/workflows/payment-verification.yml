@@ -7,6 +7,8 @@ on:
       - "tests/paystackVerification.test.js"
       - "routes/payments.js"
       - "server.js"
+      - "routes/orders.js"
+      - "services/finalizePaidOrder.js"
       - ".github/workflows/payment-verification.yml"
   push:
     paths:
@@ -14,6 +16,8 @@ on:
       - "tests/paystackVerification.test.js"
       - "routes/payments.js"
       - "server.js"
+      - "routes/orders.js"
+      - "services/finalizePaidOrder.js"
       - ".github/workflows/payment-verification.yml"
 
 jobs:
@@ -28,6 +32,8 @@ jobs:
         run: |
           node --check server.js
           node --check routes/payments.js
+          node --check routes/orders.js
+          node --check services/finalizePaidOrder.js
           node --check utils/paystackPaymentValidation.js
       - name: Run payment validation tests
         run: node --test tests/paystackVerification.test.js
