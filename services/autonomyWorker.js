@@ -48,7 +48,7 @@ function utcWeekStart(now = new Date()) {
 async function ensureSchema() {
   if (!schemaPromise) {
     schemaPromise = (async () => {
-      await pool.query(\`
+      await pool.query(`
         CREATE TABLE IF NOT EXISTS goldmart_ai_autonomy_settings (
           id INTEGER PRIMARY KEY CHECK (id = 1),
           enabled BOOLEAN NOT NULL DEFAULT FALSE,
@@ -58,20 +58,20 @@ async function ensureSchema() {
           updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
           updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
-      \`);
-      await pool.query(\`
+      `);
+      await pool.query(`
         INSERT INTO goldmart_ai_autonomy_settings (id)
         VALUES (1) ON CONFLICT (id) DO NOTHING
-      \`);
-      await pool.query(\`
+      `);
+      await pool.query(`
         CREATE TABLE IF NOT EXISTS goldmart_ai_autonomy_actions (
           action_key TEXT NOT NULL,
           window_key DATE NOT NULL,
           created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
           PRIMARY KEY (action_key, window_key)
         )
-      \`);
-      await pool.query(\`
+      `);
+      await pool.query(`
         CREATE TABLE IF NOT EXISTS goldmart_ai_autonomy_runs (
           id BIGSERIAL PRIMARY KEY,
           trigger_source TEXT NOT NULL,
@@ -79,7 +79,7 @@ async function ensureSchema() {
           summary JSONB NOT NULL DEFAULT '{}'::jsonb,
           ran_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
-      \`);
+      `);
     })().catch((error) => {
       schemaPromise = undefined;
       throw error;
@@ -106,10 +106,10 @@ async function getStatus() {
 async function updateSettings(changes, userId) {
   await ensureSchema();
   const result = await pool.query(
-    \`UPDATE goldmart_ai_autonomy_settings
+    `UPDATE goldmart_ai_autonomy_settings
        SET enabled=$1,mode=$2,seller_reminders_enabled=$3,
            updated_by=$4,updated_at=NOW()
-       WHERE id=1 RETURNING enabled,mode,seller_reminders_enabled,updated_at\`,
+       WHERE id=1 RETURNING enabled,mode,seller_reminders_enabled,updated_at`,
     [changes.enabled, changes.mode, changes.seller_reminders_enabled, userId]
   );
   return result.rows[0];
@@ -164,7 +164,7 @@ async function runAutonomy(triggerSource = "manual") {
       }
     }
 
-    const counts = await client.query(\`
+    const counts = await client.query(`
       SELECT
         (SELECT COUNT(*)::int FROM orders
          WHERE status='processing' AND created_at < NOW()-INTERVAL '72 hours') AS delayed_orders,
@@ -172,7 +172,7 @@ async function runAutonomy(triggerSource = "manual") {
          WHERE status='requested') AS refund_requests,
         (SELECT COUNT(*)::int FROM goldmart_withdrawal_requests
          WHERE status='pending_review') AS pending_withdrawals
-    \`);
+    `);
     const issues = counts.rows[0];
     const summary = {
       delayed_orders: Number(issues.delayed_orders) || 0,
@@ -188,9 +188,9 @@ async function runAutonomy(triggerSource = "manual") {
     if (ids.length && (summary.delayed_orders || summary.refund_requests || summary.pending_withdrawals) &&
         await claimAction(client, "admin:attention_summary", today)) {
       const notice = await client.query(
-        \`INSERT INTO notifications(user_id,title,message,type,is_read)
+        `INSERT INTO notifications(user_id,title,message,type,is_read)
          SELECT id,'GoldMart automatic review',$2,'admin_alert',FALSE
-         FROM users WHERE id=ANY($1::integer[]) AND is_banned=FALSE\`,
+         FROM users WHERE id=ANY($1::integer[]) AND is_banned=FALSE`,
         [ids, "Attention needed: " + summary.delayed_orders + " delayed orders, " +
           summary.refund_requests + " refund requests, " + summary.pending_withdrawals +
           " test withdrawals pending. Review each case before taking sensitive actions."]
@@ -200,7 +200,7 @@ async function runAutonomy(triggerSource = "manual") {
 
     if (permittedActions(settings).includes("seller_order_reminders")) {
       // No money movement or order-status changes. Limit and deduplicate reminders.
-      const candidates = await client.query(\`
+      const candidates = await client.query(`
         SELECT DISTINCT o.id AS order_id,p.seller_id
         FROM orders o
         JOIN order_items oi ON oi.order_id=o.id
@@ -212,14 +212,14 @@ async function runAutonomy(triggerSource = "manual") {
           AND p.seller_id <> ALL($1::integer[])
         ORDER BY o.id ASC,p.seller_id ASC
         LIMIT $2
-      \`, [ids, MAX_REMINDERS_PER_RUN]);
+      `, [ids, MAX_REMINDERS_PER_RUN]);
       const week = utcWeekStart();
       for (const item of candidates.rows) {
         const key = "seller:order:" + item.order_id + ":" + item.seller_id;
         if (!await claimAction(client, key, week)) continue;
         const result = await client.query(
-          \`INSERT INTO notifications(user_id,title,message,type,is_read)
-           VALUES($1,'Order needs a status check',$2,'seller',FALSE)\`,
+          `INSERT INTO notifications(user_id,title,message,type,is_read)
+           VALUES($1,'Order needs a status check',$2,'seller',FALSE)`,
           [item.seller_id, "Please review order #" + item.order_id +
             " in Seller Studio. It has been marked processing for over 72 hours. " +
             "Check its status; this reminder does not change the order."]
