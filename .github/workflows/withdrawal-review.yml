@@ -1,0 +1,52 @@
+name: Seller withdrawal safety tests
+
+on:
+  pull_request:
+    paths:
+      - "services/autoReviewWithdrawal.js"
+      - "services/withdrawalReviewData.js"
+      - "services/withdrawalReviewWorker.js"
+      - "routes/withdrawals.js"
+      - "routes/categories.js"
+      - "routes/products.js"
+      - "routes/index.js"
+      - "server.js"
+      - "tests/autoReviewWithdrawal.test.js"
+      - ".github/workflows/withdrawal-review.yml"
+  push:
+    branches:
+      - feat/seller-withdrawal-review-test-20261024
+    paths:
+      - "services/autoReviewWithdrawal.js"
+      - "services/withdrawalReviewData.js"
+      - "services/withdrawalReviewWorker.js"
+      - "routes/withdrawals.js"
+      - "routes/categories.js"
+      - "routes/products.js"
+      - "routes/index.js"
+      - "server.js"
+      - "tests/autoReviewWithdrawal.test.js"
+      - ".github/workflows/withdrawal-review.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  withdrawal-safety:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Check backend syntax
+        run: |
+          node --check server.js
+          node --check routes/withdrawals.js
+          node --check routes/categories.js
+          node --check routes/products.js
+          node --check services/autoReviewWithdrawal.js
+          node --check services/withdrawalReviewData.js
+          node --check services/withdrawalReviewWorker.js
+      - name: Run withdrawal safety rules
+        run: node --test tests/autoReviewWithdrawal.test.js
