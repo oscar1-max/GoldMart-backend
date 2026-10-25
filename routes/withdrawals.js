@@ -46,6 +46,7 @@ router.get("/seller",authorize("seller","admin"),async(req,res)=>{
       "a.seller_net_minor::text,a.status AS allocation_status,o.user_id AS buyer_id,o.status AS order_status,",
       "p.status AS payment_status,p.user_id AS payment_buyer_id,p.order_id AS paid_order_id,u.is_banned AS seller_is_banned,dc.confirmed_at AS buyer_confirmed_at,dc.buyer_id AS confirmed_buyer_id,",
       "(SELECT COUNT(*)::int FROM goldmart_refund_requests r WHERE r.order_id=a.order_id) AS refund_count,",
+      "(SELECT r.status FROM goldmart_refund_requests r WHERE r.order_id=a.order_id ORDER BY r.id DESC LIMIT 1) AS latest_refund_status,",
       "(SELECT COUNT(*)::int FROM seller_order_allocations sa WHERE sa.order_id=a.order_id) AS seller_count,",
       "w.id AS withdrawal_id,w.status AS withdrawal_status,w.decision_reason,w.decision_source,w.created_at AS requested_at",
       "FROM seller_order_allocations a JOIN orders o ON o.id=a.order_id JOIN payments p ON p.id=a.payment_id",
@@ -58,6 +59,7 @@ router.get("/seller",authorize("seller","admin"),async(req,res)=>{
         allocation_id:r.allocation_id,order_id:r.order_id,currency:r.currency,
         gross_minor:r.gross_minor,seller_net_minor:r.seller_net_minor,allocation_status:r.allocation_status,
         order_status:r.order_status,buyer_confirmed_at:r.buyer_confirmed_at,
+        refund_count:r.refund_count,latest_refund_status:r.latest_refund_status,
         withdrawal_id:r.withdrawal_id,withdrawal_status:r.withdrawal_status,
         decision_reason:r.decision_reason,decision_source:r.decision_source,requested_at:r.requested_at,
         eligibility:review(r)
