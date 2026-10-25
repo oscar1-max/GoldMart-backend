@@ -40,6 +40,9 @@ function verifyLegacyAmount(row, orderItems) {
       minorFromDecimal(row.order_total_amount) !== total) {
     return fail("The original payment and order totals do not match.");
   }
+  if (row.withdrawal_id != null) {
+    return fail("An existing withdrawal request requires manual review.");
+  }
   const sellerId = Number(row.seller_id);
   const seen = new Set();
   const lines = new Map();
