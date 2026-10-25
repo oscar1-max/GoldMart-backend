@@ -483,8 +483,10 @@ async function setupDatabase() {
           CHECK (decision_source IN ('automatic_rules', 'admin')),
         reviewed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        last_auto_reviewed_at TIMESTAMPTZ
       );`,
+      `ALTER TABLE goldmart_withdrawal_requests ADD COLUMN IF NOT EXISTS last_auto_reviewed_at TIMESTAMPTZ;`,
       `CREATE INDEX IF NOT EXISTS goldmart_withdrawal_requests_seller_idx
        ON goldmart_withdrawal_requests(seller_id, created_at DESC);`,
       `CREATE INDEX IF NOT EXISTS goldmart_withdrawal_requests_pending_idx
