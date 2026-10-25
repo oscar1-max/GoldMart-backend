@@ -6,7 +6,7 @@
 const { positiveMinor } = require("./autoReviewWithdrawal");
 
 function minorFromDecimal(value) {
-  const match = /^(0|[1-9]\\d*)(?:\\.(\\d{1,2}))?$/.exec(String(value ?? ""));
+  const match = new RegExp("^(0|[1-9][0-9]*)(?:[.]([0-9]{1,2}))?$").exec(String(value ?? ""));
   if (!match) return null;
   const amount = Number(match[1]) * 100 + Number((match[2] || "").padEnd(2, "0"));
   return Number.isSafeInteger(amount) ? amount : null;
