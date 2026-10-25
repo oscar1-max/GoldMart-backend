@@ -33,3 +33,22 @@ test("rejects unverified, changed or unsupported original records",()=>{
   for(const mutate of scenarios){const r=base();mutate(r);assert.equal(verifyLegacyAmount(r,lines()).ok,false);}
   assert.equal(verifyLegacyAmount(base(),[{product_id:9,quantity:2,price:"49.99"}]).ok,false);
 });
+
+test("identifies each failed payment or ownership check without restoring a balance",()=>{
+  const checks=[
+    [r=>{r.allocation_status="blocked";},/allocation is blocked or closed/i],
+    [r=>{r.payment_status="pending";},/payment is not marked successful/i],
+    [r=>{r.payment_currency="USD";},/unsupported legacy currency/i],
+    [r=>{r.payment_buyer_id=5;},/different buyer/i],
+    [r=>{r.paid_order_id=null;},/not linked to this order/i],
+    [r=>{r.seller_count=2;},/multiple or missing seller allocations/i],
+  ];
+  for(const [mutate,reason] of checks){
+    const record=base();
+    mutate(record);
+    const result=verifyLegacyAmount(record,lines());
+    assert.equal(result.ok,false);
+    assert.match(result.reason,reason);
+    assert.equal(record.seller_net_minor,null);
+  }
+});
