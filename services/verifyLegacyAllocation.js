@@ -14,7 +14,7 @@ function minorFromDecimal(value) {
 
 function verifyLegacyAmount(row, orderItems) {
   const fail = reason => ({ ok: false, reason });
-  if (!row || row.seller_net_minor !== null && row.seller_net_minor !== undefined) {
+  if (!row || (row.seller_net_minor !== null && row.seller_net_minor !== undefined)) {
     return fail("Only legacy allocations with a missing seller amount can be repaired.");
   }
   if (!["pending_review", "eligible"].includes(row.allocation_status) ||
