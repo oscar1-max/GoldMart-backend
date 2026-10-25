@@ -36,7 +36,7 @@ async function reviewOne(requestId, allocationId) {
     // This also applies to previously admin-approved tests.
     if (w.status !== decision.status) {
       await client.query(
-        "UPDATE goldmart_withdrawal_requests SET status=$1,decision_reason=$2,decision_source='automatic_rules',reviewed_by=NULL,updated_at=NOW() WHERE id=$3",
+        "UPDATE goldmart_withdrawal_requests SET status=$1,decision_reason=$2,decision_source='automatic_rules',reviewed_by=NULL,updated_at=NOW(),last_auto_reviewed_at=NOW() WHERE id=$3",
         [decision.status, decision.reason, requestId]
       );
       await client.query(
@@ -53,6 +53,7 @@ async function reviewOne(requestId, allocationId) {
       }
       await client.query("COMMIT"); active = false; return "changed";
     }
+    await client.query("UPDATE goldmart_withdrawal_requests SET last_auto_reviewed_at=NOW() WHERE id=$1", [requestId]);
     await client.query("COMMIT"); active = false; return "unchanged";
   } catch (error) {
     if (active) await client.query("ROLLBACK").catch(() => {});
@@ -72,7 +73,7 @@ async function runWithdrawalReviews(limit = 100) {
       `SELECT id,allocation_id FROM goldmart_withdrawal_requests
        WHERE (status='pending_review' AND decision_source='automatic_rules')
           OR status='approved_test'
-       ORDER BY updated_at ASC,id ASC LIMIT $1`, [count]
+       ORDER BY last_auto_reviewed_at ASC NULLS FIRST,created_at ASC,id ASC LIMIT $1`, [count]
     );
     let changed = 0;
     for (const row of candidates.rows) {
