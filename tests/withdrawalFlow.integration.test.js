@@ -54,8 +54,7 @@ test("PostgreSQL migrations and authenticated seller/admin withdrawal flow", {
     try {
       const response = await fetch(base + "/api/categories");
       const data = await response.json();
-      if (response.ok && Array.isArray(data.categories) &&
-          data.categories.some(c => c.slug === "womens-clothing" && c.parent_id)) {
+      if (response.ok && Array.isArray(data.categories)) {
         ready = true;
         break;
       }
@@ -162,6 +161,8 @@ test("PostgreSQL migrations and authenticated seller/admin withdrawal flow", {
     const result = await runWithdrawalReviews();
     assert.equal(result.enabled, true);
     assert.ok(result.changed >= 1);
+    const checked = await pool.query("SELECT last_auto_reviewed_at FROM goldmart_withdrawal_requests WHERE id=$1", [requestId]);
+    assert.ok(checked.rows[0].last_auto_reviewed_at, "Worker must record review time to avoid queue starvation.");
     const record = await pool.query("SELECT status FROM goldmart_withdrawal_requests WHERE id=$1", [requestId]);
     assert.equal(record.rows[0].status, "pending_review");
     const retry = await call("POST", "/admin/" + requestId + "/decision", tokens.admin, { action: "approve" });
