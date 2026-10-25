@@ -77,7 +77,8 @@ router.post("/seller/:id/reconcile-amount",authorize("seller","admin"),requireTe
         "SELECT a.id,a.order_id,a.seller_id,a.currency,a.gross_minor::text,a.commission_minor::text,a.seller_net_minor::text,",
         "a.status AS allocation_status,o.user_id AS buyer_id,o.total_amount AS order_total_amount,",
         "p.status AS payment_status,p.user_id AS payment_buyer_id,p.order_id AS paid_order_id,",
-        "p.currency AS payment_currency,p.amount AS payment_amount,p.checkout_snapshot,",
+        "p.currency AS payment_currency,p.amount AS payment_amount,p.checkout_snapshot,"
+        "(SELECT id FROM goldmart_withdrawal_requests w WHERE w.allocation_id=a.id LIMIT 1) AS withdrawal_id,",
         "(SELECT COUNT(*)::int FROM seller_order_allocations x WHERE x.order_id=a.order_id) AS seller_count",
         "FROM seller_order_allocations a JOIN orders o ON o.id=a.order_id",
         "JOIN payments p ON p.id=a.payment_id WHERE a.id=$1 FOR UPDATE OF a"
