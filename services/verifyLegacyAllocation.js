@@ -17,13 +17,25 @@ function verifyLegacyAmount(row, orderItems) {
   if (!row || (row.seller_net_minor !== null && row.seller_net_minor !== undefined)) {
     return fail("Only legacy allocations with a missing seller amount can be repaired.");
   }
-  if (!["pending_review", "eligible"].includes(row.allocation_status) ||
-      row.payment_status !== "success" ||
-      row.payment_currency !== "NGN" ||
-      Number(row.payment_buyer_id) !== Number(row.buyer_id) ||
-      Number(row.paid_order_id) !== Number(row.order_id) ||
-      Number(row.seller_count) !== 1) {
-    return fail("Payment, order or seller ownership needs manual review.");
+  // Return the first failed check to the allocation owner. This is a
+  // read-only diagnosis; never relax the original payment safety rules.
+  if (!["pending_review", "eligible"].includes(row.allocation_status)) {
+    return fail("This allocation is blocked or closed. Admin must review its status.");
+  }
+  if (row.payment_status !== "success") {
+    return fail("The original payment is not marked successful. Admin must verify the payment with the provider.");
+  }
+  if (row.payment_currency !== "NGN") {
+    return fail("The original payment uses an unsupported legacy currency. Admin must review the original payment evidence.");
+  }
+  if (Number(row.payment_buyer_id) !== Number(row.buyer_id)) {
+    return fail("The payment belongs to a different buyer than this order. Admin must review ownership.");
+  }
+  if (Number(row.paid_order_id) !== Number(row.order_id)) {
+    return fail("The original payment is not linked to this order. Admin must review the payment link.");
+  }
+  if (Number(row.seller_count) !== 1) {
+    return fail("This order has multiple or missing seller allocations. Admin must review the allocation records.");
   }
   const snapshot = row.checkout_snapshot;
   if (!snapshot || snapshot.schema_version !== 1 ||
