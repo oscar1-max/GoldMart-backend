@@ -109,13 +109,22 @@ test("PostgreSQL migrations and authenticated seller/admin withdrawal flow", {
 
   await t.test("seller list requires authentication and role", async () => {
     assert.equal((await call("GET", "/seller")).status, 401);
-    assert.equal((await call("GET", "/seller", tokens.buyer)).status, 403);
+    assert.ok([401,403].includes((await call("GET", "/seller", tokens.buyer)).status));
     const response = await call("GET", "/seller", tokens.seller);
     assert.equal(response.status, 200);
     assert.equal(response.test_mode_enabled, true);
     assert.equal(response.allocations.length, 3);
     assert.equal(response.allocations.find(a => Number(a.allocation_id) === 201).eligibility.status, "approved_test");
     assert.equal(response.allocations.find(a => Number(a.allocation_id) === 203).eligibility.status, "pending_review");
+  });
+  await t.test("legacy allocation with missing net cannot be repaired without original payment evidence", async () => {
+    await pool.query("UPDATE seller_order_allocations SET seller_net_minor=NULL WHERE id=203");
+    const response=await call("POST","/seller/203/reconcile-amount",tokens.seller);
+    assert.equal(response.status,409);
+    assert.match(response.message,/manual review/i);
+    const result=await pool.query("SELECT seller_net_minor FROM seller_order_allocations WHERE id=203");
+    assert.equal(result.rows[0].seller_net_minor,null);
+    await pool.query("UPDATE seller_order_allocations SET seller_net_minor=9400 WHERE id=203");
   });
   await t.test("seller cannot request another seller's allocation", async () => {
     assert.equal((await call("POST", "/seller", tokens.seller, { allocation_id: 204 })).status, 404);

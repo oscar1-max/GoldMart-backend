@@ -20,6 +20,7 @@ function requireTest(req,res,next) {
   next();
 }
 const { review, detail, lockOrder } = require("../services/withdrawalReviewData");
+const { verifyLegacyAmount } = require("../services/verifyLegacyAllocation");
 async function transaction(work) {
   const client=await pool.connect();let active=false;
   try {await client.query("BEGIN");active=true;const value=await work(client);await client.query("COMMIT");active=false;return value;}
@@ -62,6 +63,41 @@ router.get("/seller",authorize("seller","admin"),async(req,res)=>{
         eligibility:review(r)
       }))});
   } catch(e){return failure(res,e);}
+});
+
+// Explicit legacy reconciliation: never alters payment records, creates a payout,
+// or changes an allocation without validating the original paid checkout.
+router.post("/seller/:id/reconcile-amount",authorize("seller","admin"),requireTest,async(req,res)=>{
+  const id=validId(req.params.id);
+  if(!id)return res.status(400).json({success:false,message:"Valid allocation ID required."});
+  try{
+    const output=await transaction(async client=>{
+      if(!(await lockOrder(client,id)))return {code:404,body:{success:false,message:"Allocation not found."}};
+      const result=await client.query([
+        "SELECT a.id,a.order_id,a.seller_id,a.currency,a.gross_minor::text,a.commission_minor::text,a.seller_net_minor::text,",
+        "a.status AS allocation_status,o.user_id AS buyer_id,o.total_amount AS order_total_amount,",
+        "p.status AS payment_status,p.user_id AS payment_buyer_id,p.order_id AS paid_order_id,",
+        "p.currency AS payment_currency,p.amount AS payment_amount,p.checkout_snapshot,",
+        "(SELECT id FROM goldmart_withdrawal_requests w WHERE w.allocation_id=a.id LIMIT 1) AS withdrawal_id,",
+        "(SELECT COUNT(*)::int FROM seller_order_allocations x WHERE x.order_id=a.order_id) AS seller_count",
+        "FROM seller_order_allocations a JOIN orders o ON o.id=a.order_id",
+        "JOIN payments p ON p.id=a.payment_id WHERE a.id=$1 FOR UPDATE OF a"
+      ].join(" "),[id]);
+      const a=result.rows[0];
+      if(!a||Number(a.seller_id)!==Number(req.user.id))return {code:404,body:{success:false,message:"Allocation not found for your store."}};
+      if(a.seller_net_minor!==null)return {code:409,body:{success:false,message:"This amount is already recorded. Contact support if it appears incorrect."}};
+      const items=await client.query("SELECT product_id,quantity,price FROM order_items WHERE order_id=$1 ORDER BY product_id",[a.order_id]);
+      const verified=verifyLegacyAmount(a,items.rows);
+      if(!verified.ok)return {code:409,body:{success:false,message:verified.reason}};
+      const update=await client.query([
+        "UPDATE seller_order_allocations SET commission_minor=$1,seller_net_minor=$2,updated_at=NOW()",
+        "WHERE id=$3 AND seller_net_minor IS NULL RETURNING id"
+      ].join(" "),[verified.commission_minor,verified.seller_net_minor,id]);
+      if(!update.rowCount)return {code:409,body:{success:false,message:"Allocation changed. Refresh before trying again."}};
+      return {code:200,body:{success:true,message:"Original test payment and order verified. Seller amount restored; withdrawal safety checks still apply. No money was transferred."}};
+    });
+    return res.status(output.code).json(output.body);
+  }catch(e){return failure(res,e);}
 });
 
 // Exactly one request per seller allocation, and amount comes only from DB.
