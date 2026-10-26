@@ -221,6 +221,19 @@ router.get(
         });
       }
 
+      const shipmentRows = await pool.query(
+        `SELECT s.order_id,s.carrier,s.tracking_number,s.status,s.updated_at
+         FROM goldmart_shipments s
+         JOIN orders o ON o.id=s.order_id
+         WHERE s.seller_id=$1 AND o.id IN (
+           SELECT oi.order_id FROM order_items oi
+           JOIN products p ON p.id=oi.product_id WHERE p.seller_id=$1
+         )`,
+        [sellerId]
+      );
+      for (const order of orders) {
+        order.shipment = shipmentRows.rows.find(row => Number(row.order_id) === Number(order.id)) || null;
+      }
       return res.json({
         success: true,
         orders,
