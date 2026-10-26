@@ -4,6 +4,7 @@ const crypto = require("crypto");
 const pool = require("../db");
 const { protect } = require("../middleware/auth");
 const { matchesVerifiedPayment } = require("../utils/paystackPaymentValidation");
+const { normalizeDelivery } = require("../utils/shippingValidation");
 
 const router = express.Router();
 
@@ -432,62 +433,18 @@ router.post(
       // VALIDATE DELIVERY
       // ================================================
 
-      const rawDelivery =
-        req.body?.metadata
-          ?.delivery;
-
-      if (
-        !rawDelivery ||
-        typeof rawDelivery !==
-          "object" ||
-        Array.isArray(
-          rawDelivery
-        )
-      ) {
+      const checkedDelivery = normalizeDelivery(req.body?.metadata?.delivery);
+      if (!checkedDelivery.ok) {
         return res.status(400).json({
           success: false,
-          message:
-            "Delivery information is required.",
+          message: checkedDelivery.message,
         });
       }
+      const delivery = checkedDelivery.delivery;
 
-      const delivery = {};
-
-      for (
-        const field of [
-          "firstName",
-          "lastName",
-          "email",
-          "phone",
-          "address",
-          "city",
-          "state",
-        ]
-      ) {
-        const value = String(
-          rawDelivery[field] ||
-          ""
-        ).trim();
-
-        if (
-          !value ||
-          value.length >
-            (
-              field === "address"
-                ? 500
-                : 150
-            )
-        ) {
-          return res.status(400).json({
-            success: false,
-            message:
-              "Please complete valid delivery information.",
-          });
-        }
-
-        delivery[field] =
-          value;
-      }
+      // Worldwide destination capture is enabled, but carrier availability
+      // and shipping prices have not yet been quoted or promised.
+      // Real payments remain disabled by requireTestProvider().
 
       // ================================================
       // PAYMENT REFERENCE

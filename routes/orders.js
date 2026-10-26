@@ -3,6 +3,7 @@ const express = require("express");
 const pool = require("../db");
 const { protect } = require("../middleware/auth");
 const { finalizePaidOrder, OrderNeedsReviewError } = require("../services/finalizePaidOrder");
+const { normalizeTracking } = require("../utils/shippingValidation");
 
 const router = express.Router();
 
@@ -220,6 +221,19 @@ router.get(
         });
       }
 
+      const shipmentRows = await pool.query(
+        `SELECT s.order_id,s.carrier,s.tracking_number,s.status,s.updated_at
+         FROM goldmart_shipments s
+         JOIN orders o ON o.id=s.order_id
+         WHERE s.seller_id=$1 AND o.id IN (
+           SELECT oi.order_id FROM order_items oi
+           JOIN products p ON p.id=oi.product_id WHERE p.seller_id=$1
+         )`,
+        [sellerId]
+      );
+      for (const order of orders) {
+        order.shipment = shipmentRows.rows.find(row => Number(row.order_id) === Number(order.id)) || null;
+      }
       return res.json({
         success: true,
         orders,
@@ -492,6 +506,98 @@ router.put(
 );
 
 // =====================================================
+// SELLER-REPORTED SHIPMENT TRACKING (NOT LIVE CARRIER DATA)
+// PUT /api/orders/seller/:orderId/shipment
+// =====================================================
+router.put("/seller/:orderId/shipment", protect, async (req, res) => {
+  const orderId = validId(req.params.orderId);
+  const sellerId = validId(req.user?.id);
+  const checked = normalizeTracking(req.body);
+  if (!orderId || !sellerId || !checked.ok) {
+    return res.status(400).json({
+      success: false,
+      message: checked.message || "Valid order and seller are required.",
+    });
+  }
+  const client = await pool.connect();
+  let inTransaction = false;
+  try {
+    await client.query("BEGIN");
+    inTransaction = true;
+    const orderResult = await client.query(
+      "SELECT id, user_id, status FROM orders WHERE id=$1 FOR UPDATE",
+      [orderId]
+    );
+    if (!orderResult.rows.length) {
+      await client.query("ROLLBACK");
+      inTransaction = false;
+      return res.status(404).json({ success: false, message: "Order not found." });
+    }
+    const ownership = await client.query(
+      "SELECT DISTINCT p.seller_id FROM order_items oi JOIN products p ON p.id=oi.product_id WHERE oi.order_id=$1",
+      [orderId]
+    );
+    const sellers = ownership.rows.map(row => validId(row.seller_id));
+    if (sellers.length !== 1 || sellers[0] !== sellerId) {
+      await client.query("ROLLBACK");
+      inTransaction = false;
+      return res.status(403).json({
+        success: false,
+        message: "Shipment tracking is currently limited to single-seller orders owned by you.",
+      });
+    }
+    if (!["shipped", "delivered"].includes(String(orderResult.rows[0].status).toLowerCase())) {
+      await client.query("ROLLBACK");
+      inTransaction = false;
+      return res.status(409).json({
+        success: false, message: "Mark the order as shipped before adding tracking details.",
+      });
+    }
+    const refunds = await client.query(
+      "SELECT id FROM goldmart_refund_requests WHERE order_id=$1 AND status <> 'rejected' LIMIT 1",
+      [orderId]
+    );
+    if (refunds.rows.length) {
+      await client.query("ROLLBACK");
+      inTransaction = false;
+      return res.status(409).json({
+        success: false, message: "Shipment updates are paused while a refund or cancellation is under review.",
+      });
+    }
+    const { carrier, trackingNumber, status } = checked.tracking;
+    const saved = await client.query(
+      `INSERT INTO goldmart_shipments (order_id,seller_id,carrier,tracking_number,status)
+       VALUES ($1,$2,$3,$4,$5)
+       ON CONFLICT (order_id,seller_id) DO UPDATE SET
+         carrier=EXCLUDED.carrier,
+         tracking_number=EXCLUDED.tracking_number,
+         status=EXCLUDED.status,
+         updated_at=NOW()
+       RETURNING id,order_id,seller_id,carrier,tracking_number,status,updated_at`,
+      [orderId, sellerId, carrier, trackingNumber, status]
+    );
+    await client.query(
+      "INSERT INTO notifications (user_id,title,message,type,is_read) VALUES ($1,$2,$3,'order',FALSE)",
+      [orderResult.rows[0].user_id, "Shipment tracking added",
+        "The seller provided shipping information for order #" + orderId + ". View your order for the reported carrier and tracking number."]
+    );
+    await client.query("COMMIT");
+    inTransaction = false;
+    return res.json({
+      success: true,
+      message: "Seller-reported tracking saved. This is not live carrier verification.",
+      shipment: saved.rows[0],
+    });
+  } catch (error) {
+    if (inTransaction) await client.query("ROLLBACK").catch(() => {});
+    console.error("Save shipment error:", error.message);
+    return res.status(500).json({ success: false, message: "Unable to save shipment details." });
+  } finally {
+    client.release();
+  }
+});
+
+// =====================================================
 // GET ONE BUYER ORDER
 // GET /api/orders/:orderId
 // =====================================================
@@ -553,10 +659,15 @@ router.get(
         [orderId]
       );
 
+      const shipmentsResult = await pool.query(
+        "SELECT seller_id, carrier, tracking_number, status, updated_at FROM goldmart_shipments WHERE order_id=$1 ORDER BY seller_id",
+        [orderId]
+      );
       return res.json({
         success: true,
         order: orderResult.rows[0],
         items: itemsResult.rows,
+        shipments: shipmentsResult.rows,
       });
     } catch (error) {
       console.error(
