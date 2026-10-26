@@ -1,0 +1,31 @@
+name: Worldwide shipping checks
+
+on:
+  pull_request:
+    paths:
+      - "utils/shippingValidation.js"
+      - "tests/shippingValidation.test.js"
+      - "routes/orders.js"
+      - "routes/payments.js"
+      - "server.js"
+      - ".github/workflows/worldwide-shipping.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  shipping-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Check syntax
+        run: |
+          node --check utils/shippingValidation.js
+          node --check routes/orders.js
+          node --check routes/payments.js
+          node --check server.js
+      - name: Validate addresses, tracking and payment compatibility
+        run: node --test tests/shippingValidation.test.js tests/paystackVerification.test.js tests/orderFinalization.test.js
