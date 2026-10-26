@@ -5,6 +5,7 @@ const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
 const pool = require("../db");
 const { sendGoldMartEmail } = require("../services/emailService");
+const { rateLimitAuth } = require("../middleware/authRateLimit");
 
 const router = express.Router();
 
@@ -179,7 +180,7 @@ function sendHtml(res, status, html) {
 // POST /api/auth/register
 // ==========================================
 
-router.post("/register", async (req, res) => {
+router.post("/register", rateLimitAuth({ action: "register", ipLimit: 15, accountLimit: 6 }), async (req, res) => {
   try {
     const {
       name,
@@ -329,7 +330,7 @@ router.post("/register", async (req, res) => {
 // POST /api/auth/login
 // ==========================================
 
-router.post("/login", async (req, res) => {
+router.post("/login", rateLimitAuth({ action: "login", ipLimit: 45, accountLimit: 15 }), async (req, res) => {
   try {
     const { email, password } = req.body || {};
 
@@ -399,7 +400,7 @@ router.post("/login", async (req, res) => {
 // Requires Authorization: Bearer token
 // ==========================================
 
-router.post("/resend-verification", async (req, res) => {
+router.post("/resend-verification", rateLimitAuth({ action: "resend-verification", ipLimit: 15, accountLimit: 8 }), async (req, res) => {
   try {
     const authenticatedUser = getAuthenticatedUser(req);
     const userId = validId(authenticatedUser?.id);
