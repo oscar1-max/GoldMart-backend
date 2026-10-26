@@ -1,0 +1,22 @@
+name: GoldMart authentication security checks
+on:
+  pull_request:
+    paths:
+      - 'routes/auth.js'
+      - 'middleware/authRateLimit.js'
+      - 'tests/authRateLimit.test.js'
+      - '.github/workflows/auth-security.yml'
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install --no-audit --no-fund
+      - run: node --check routes/auth.js
+      - run: node --check middleware/authRateLimit.js
+      - run: node --test tests/authRateLimit.test.js
