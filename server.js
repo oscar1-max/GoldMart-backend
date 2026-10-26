@@ -461,6 +461,23 @@ async function setupDatabase() {
       `CREATE INDEX IF NOT EXISTS seller_order_allocations_seller_status_idx
        ON seller_order_allocations(seller_id, status);`,
 
+      // Worldwide shipping groundwork: record seller-reported tracking per
+      // seller and order. This is NOT a carrier integration or live quote.
+      `CREATE TABLE IF NOT EXISTS goldmart_shipments (
+        id BIGSERIAL PRIMARY KEY,
+        order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+        seller_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        carrier VARCHAR(100) NOT NULL,
+        tracking_number VARCHAR(120) NOT NULL,
+        status VARCHAR(30) NOT NULL DEFAULT 'dispatched'
+          CHECK (status IN ('dispatched', 'in_transit')),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE (order_id, seller_id)
+      );`,
+      `CREATE INDEX IF NOT EXISTS goldmart_shipments_seller_idx
+       ON goldmart_shipments(seller_id, updated_at DESC);`,
+
       // Buyer confirmation already has an API; ensure new databases have its table.
       `CREATE TABLE IF NOT EXISTS goldmart_delivery_confirmations (
         order_id INTEGER PRIMARY KEY REFERENCES orders(id) ON DELETE CASCADE,
