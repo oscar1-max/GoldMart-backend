@@ -72,7 +72,7 @@ router.post("/addresses/validate", async (req, res) => {
   addressValidationCooldown.set(adminId, now + 60000);
   try {
     const data = await request("/shipping/address/validate", {
-      method: "POST", body: input
+      method: "POST", body: { name: input.name, email: input.email, phone: input.phone, address: input.address }
     });
     const address = normalizeAddressRecord(data);
     if (!address) {
