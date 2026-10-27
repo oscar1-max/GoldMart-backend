@@ -3,7 +3,10 @@ const express = require("express");
 const { protect, authorize } = require("../middleware/auth");
 const { request, formatRate, ShipbubbleError } = require("../services/shipbubble");
 
+const { normalizeAddressInput, normalizeAddressRecord } = require("../utils/shipbubbleAddressValidation");
+
 const router = express.Router();
+const addressValidationCooldown = new Map();
 // Admin-only preview: this does not create shipping labels, book couriers,
 // change order status, charge customers, or debit the Shipbubble wallet.
 router.use(protect, authorize("admin"));
@@ -39,24 +42,51 @@ router.get("/categories", async (req, res) => {
 router.get("/addresses", async (req, res) => {
   try {
     const data = await request("/shipping/address");
-    const results = Array.isArray(data?.results) ? data.results : [];
-    const addresses = results.slice(0, 50).map(item => {
-      const details = item && item.address_data || {};
-      const code = Number(item?.address_code);
-      if (!Number.isSafeInteger(code) || code <= 0) return null;
-      return {
-        address_code: code,
-        name: String(details.name || "").slice(0, 120),
-        formatted_address: String(details.formatted_address || "").slice(0, 300),
-        city: String(details.city || "").slice(0, 120),
-        state: String(details.state || "").slice(0, 120),
-        country: String(details.country || "").slice(0, 120)
-      };
-    }).filter(Boolean);
+    const results = Array.isArray(data?.results) ? data.results : Array.isArray(data) ? data : [];
+    const addresses = results.slice(0, 50).map(normalizeAddressRecord).filter(Boolean);
     return res.json({ success: true, addresses });
   } catch (error) {
     return res.status(error instanceof ShipbubbleError ? error.httpStatus : 502)
       .json({ success: false, message: error instanceof ShipbubbleError ? error.message : "Unable to load validated shipping addresses." });
+  }
+});
+
+// Explicit admin action: a successful address validation may consume credits.
+router.post("/addresses/validate", async (req, res) => {
+  const input = normalizeAddressInput(req.body);
+  if (!input) {
+    return res.status(400).json({
+      success: false,
+      message: "Enter a valid name, email, phone and full address, and confirm the validation credit charge."
+    });
+  }
+  const adminId = String(req.user.id);
+  const now = Date.now();
+  const nextAllowed = addressValidationCooldown.get(adminId) || 0;
+  if (now < nextAllowed) {
+    return res.status(429).json({
+      success: false,
+      message: "Please wait 60 seconds before validating another address."
+    });
+  }
+  addressValidationCooldown.set(adminId, now + 60000);
+  try {
+    const data = await request("/shipping/address/validate", {
+      method: "POST", body: input
+    });
+    const address = normalizeAddressRecord(data);
+    if (!address) {
+      return res.status(502).json({
+        success: false, message: "Shipbubble did not return a usable address code."
+      });
+    }
+    return res.json({ success: true, address });
+  } catch (error) {
+    return res.status(error instanceof ShipbubbleError ? error.httpStatus : 502)
+      .json({
+        success: false,
+        message: error instanceof ShipbubbleError ? error.message : "Address validation failed."
+      });
   }
 });
 
