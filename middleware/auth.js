@@ -56,6 +56,10 @@ const protect = async (req, res, next) => {
       name: user.name,
       email: user.email,
       role: user.role,
+      // The configured owner may use buyer/seller mode without losing
+      // administrator access. This flag comes from the database user ID,
+      // never from a client-provided token role or request body.
+      is_admin: isAdmin,
       is_banned: user.is_banned,
     };
 
@@ -72,7 +76,14 @@ const protect = async (req, res, next) => {
 
 const authorize = (...roles) => {
   return (req, res, next) => {
-    if (!req.user || !roles.includes(req.user.role)) {
+    // Grant admin-only routes to the explicitly configured owner even
+    // when their current storefront role is buyer or seller. Do not let
+    // admin status bypass routes that require some other role.
+    const allowed = req.user && (
+      roles.includes(req.user.role) ||
+      (roles.includes("admin") && req.user.is_admin === true)
+    );
+    if (!allowed) {
       return res.status(403).json({
         success: false,
         message: "You do not have permission to access this resource",
