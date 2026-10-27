@@ -14,7 +14,7 @@ class ShipbubbleError extends Error {
 
 function liveKey() {
   const key = String(process.env.SHIPBUBBLE_LIVE_API_KEY || "").trim();
-  if (!key.startsWith("sb_prod_")) {
+  if (!key || key.length < 12) {
     throw new ShipbubbleError("Shipbubble live API is not configured correctly.", 503);
   }
   return key;
