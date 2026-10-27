@@ -34,6 +34,32 @@ router.get("/categories", async (req, res) => {
   }
 });
 
+// Read already-validated addresses from the Shipbubble account.
+// Read-only: does not validate new addresses, spend validation credits, or book shipments.
+router.get("/addresses", async (req, res) => {
+  try {
+    const data = await request("/shipping/address");
+    const results = Array.isArray(data?.results) ? data.results : [];
+    const addresses = results.slice(0, 50).map(item => {
+      const details = item && item.address_data || {};
+      const code = Number(item?.address_code);
+      if (!Number.isSafeInteger(code) || code <= 0) return null;
+      return {
+        address_code: code,
+        name: String(details.name || "").slice(0, 120),
+        formatted_address: String(details.formatted_address || "").slice(0, 300),
+        city: String(details.city || "").slice(0, 120),
+        state: String(details.state || "").slice(0, 120),
+        country: String(details.country || "").slice(0, 120)
+      };
+    }).filter(Boolean);
+    return res.json({ success: true, addresses });
+  } catch (error) {
+    return res.status(error instanceof ShipbubbleError ? error.httpStatus : 502)
+      .json({ success: false, message: error instanceof ShipbubbleError ? error.message : "Unable to load validated shipping addresses." });
+  }
+});
+
 // Requires address codes obtained from Shipbubble's Addresses API.
 // Caller supplies only ONE parcel item; this preview cannot be used to book it.
 router.post("/preview-rates", async (req, res) => {
@@ -57,7 +83,7 @@ router.post("/preview-rates", async (req, res) => {
       !validId(quantity) || quantity > 100 ||
       !name || name.length > 120 || !description || description.length > 150 ||
       dimensions.some(n => !Number.isFinite(n) || n <= 0 || n > 1000) ||
-      !/^\\d{4}-\\d{2}-\\d{2}$/.test(date)) {
+      !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
     return res.status(400).json({
       success: false, message: "Valid Shipbubble address codes, package category, item details, dimensions (cm), and pickup date are required."
     });
