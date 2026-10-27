@@ -14,7 +14,7 @@ class ShipbubbleError extends Error {
 
 function liveKey() {
   const key = String(process.env.SHIPBUBBLE_LIVE_API_KEY || "").trim();
-  if (!key || key.length < 12) {
+  if (!key.startsWith("sb_prod_")) {
     throw new ShipbubbleError("Shipbubble live API is not configured correctly.", 503);
   }
   return key;
@@ -64,8 +64,8 @@ async function request(path, options = {}) {
 }
 
 function formatRate(rate) {
-  const price = Number(rate?.rate_card_amount);
-  const currency = String(rate?.rate_card_currency || "").trim().toUpperCase();
+  const price = Number(rate?.total_amount);
+  const currency = String(rate?.currency || "").trim().toUpperCase();
   if (!Number.isFinite(price) || price < 0 || !/^[A-Z]{3}$/.test(currency)) {
     return null; // never invent a delivery price
   }
