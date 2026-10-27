@@ -57,7 +57,7 @@ router.post("/preview-rates", async (req, res) => {
       !validId(quantity) || quantity > 100 ||
       !name || name.length > 120 || !description || description.length > 150 ||
       dimensions.some(n => !Number.isFinite(n) || n <= 0 || n > 1000) ||
-      !/^\\d{4}-\\d{2}-\\d{2}$/.test(date)) {
+      !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
     return res.status(400).json({
       success: false, message: "Valid Shipbubble address codes, package category, item details, dimensions (cm), and pickup date are required."
     });
