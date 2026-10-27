@@ -17,13 +17,14 @@ router.post("/preview-rates", protect, authorize("admin"), async (req, res) => {
   const weight = Number(b.package_items?.[0]?.weight);
   const quantity = Number(b.package_items?.[0]?.quantity);
   const description = String(b.package_items?.[0]?.description || "").trim();
+  const dimensions = [b.length,b.width,b.height].map(Number);
   const date = String(b.pickup_date || "").trim();
   const validCode = s => /^[A-Za-z0-9_-]{2,100}$/.test(s);
   if (!validCode(pickup) || !validCode(delivery) || !Number.isSafeInteger(category) || category <= 0 ||
       !Number.isFinite(amount) || amount <= 0 || amount > 100000000 ||
       !Number.isFinite(weight) || weight <= 0 || weight > 100000 ||
       !Number.isSafeInteger(quantity) || quantity < 1 || quantity > 100 ||
-      !description || description.length > 150 || !/^\\d{4}-\\d{2}-\\d{2}$/.test(date)) {
+      !description || description.length > 150 || dimensions.some(n => !Number.isFinite(n) || n <= 0 || n > 1000) || !/^\\d{4}-\\d{2}-\\d{2}$/.test(date)) {
     return res.status(400).json({ success: false, message: "Valid verified address codes, category, one package item, and pickup date are required." });
   }
   const pickupDate = new Date(date + "T00:00:00Z");
