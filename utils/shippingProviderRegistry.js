@@ -76,7 +76,11 @@ function assessCartDelivery(sellers, destinationInput) {
 
 async function loadSellerRoutes(pool, sellerIds) {
   const ids = [...new Set((sellerIds || []).map(Number))];
-  if (!ids.length || ids.some(id => !Number.isSafeInteger(id) || id <= 0)) return [];
+  if (!ids.length) return [];
+  // A cart with a missing/invalid seller must fail closed, not look empty.
+  if (ids.some(id => !Number.isSafeInteger(id) || id <= 0)) {
+    return [{ seller_id: null, country_code: null, pickup_country: null }];
+  }
   const result = await pool.query(
     "SELECT ids.seller_id, sp.country_code, spa.country AS pickup_country " +
     "FROM unnest($1::integer[]) AS ids(seller_id) " +
