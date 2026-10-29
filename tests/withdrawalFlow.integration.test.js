@@ -107,6 +107,53 @@ test("PostgreSQL migrations and authenticated seller/admin withdrawal flow", {
     return { status: response.status, ...data };
   }
 
+  await t.test("seller pickup addresses are private, seller-owned, and editable", async () => {
+    const url = base + "/api/seller/pickup-address";
+    const address = {
+      contact_name: "Ada Okafor", contact_email: "ada@example.com",
+      contact_phone: "+2348012345678", address_line1: "42 Example Street",
+      address_line2: "Shop 3", city: "Awka", state: "Anambra",
+      country: "Nigeria", postal_code: "420001", seller_id: 4
+    };
+    async function request(method, bearer, body) {
+      const response = await fetch(url, {
+        method,
+        headers: {
+          ...(bearer ? { Authorization: "Bearer " + bearer } : {}),
+          ...(body ? { "Content-Type": "application/json" } : {})
+        },
+        ...(body ? { body: JSON.stringify(body) } : {})
+      });
+      return { status: response.status, ...(await response.json()) };
+    }
+    for (const method of ["GET", "PUT"]) {
+      const payload = method === "PUT" ? address : undefined;
+      assert.equal((await request(method, undefined, payload)).status, 401);
+      assert.equal((await request(method, tokens.buyer, payload)).status, 403);
+      assert.equal((await request(method, tokens.admin, payload)).status, 403);
+    }
+    const empty = await request("GET", tokens.seller);
+    assert.equal(empty.status, 200);
+    assert.equal(empty.address, null);
+    const invalid = await request("PUT", tokens.seller, { ...address, contact_email: "invalid" });
+    assert.equal(invalid.status, 400);
+    const saved = await request("PUT", tokens.seller, address);
+    assert.equal(saved.status, 200);
+    assert.equal(saved.validation_status, "not_validated");
+    assert.equal(saved.address.address_line1, "42 Example Street");
+    assert.equal(saved.address.seller_id, undefined);
+    const otherEmpty = await request("GET", tokens.other);
+    assert.equal(otherEmpty.address, null);
+    const otherSaved = await request("PUT", tokens.other, { ...address, address_line1: "88 Other Street" });
+    assert.equal(otherSaved.status, 200);
+    const updated = await request("PUT", tokens.seller, { ...address, city: "Onitsha" });
+    assert.equal(updated.status, 200);
+    assert.equal((await request("GET", tokens.seller)).address.city, "Onitsha");
+    assert.equal((await request("GET", tokens.other)).address.address_line1, "88 Other Street");
+    const db = await pool.query("SELECT seller_id FROM seller_pickup_addresses ORDER BY seller_id");
+    assert.deepEqual(db.rows.map(x => x.seller_id), [2, 4]);
+  });
+
   await t.test("seller list requires authentication and role", async () => {
     assert.equal((await call("GET", "/seller")).status, 401);
     assert.ok([401,403].includes((await call("GET", "/seller", tokens.buyer)).status));
