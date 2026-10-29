@@ -14,6 +14,7 @@ const cartRoutes = require("./cart");
 const orderRoutes = require("./orders");
 const paymentRoutes = require("./payments");
 const shippingRoutes = require("./shipping");
+const shippingEligibilityRoutes = require("./shippingEligibility");
 const sellerRoutes = require("./seller");
 const sellerPickupRoutes = require("./sellerPickup");
 const sellerProfileRoutes = require("./sellerProfile");
@@ -110,6 +111,7 @@ router.use("/orders", orderRoutes);
 
 router.use("/payments", paymentRoutes);
 router.use("/shipping", shippingRoutes);
+router.use("/shipping/eligibility", shippingEligibilityRoutes);
 
 router.use("/seller", sellerRoutes);
 router.use("/seller/pickup-address", sellerPickupRoutes);
