@@ -4,9 +4,31 @@ const express = require("express");
 const pool = require("../db");
 const { protect, authorize } = require("../middleware/auth");
 const { normalizeSellerProfile } = require("../utils/sellerProfile");
+const { buildShippingReadiness } = require("../utils/shippingReadiness");
 
 const router = express.Router();
 const sellerOnly = [protect, authorize("seller")];
+
+// Read-only, private readiness for this authenticated seller. No carrier API
+// calls, address validation charges, rate quotes, bookings, or payout actions.
+router.get("/shipping-readiness", ...sellerOnly, async (req, res) => {
+  try {
+    const [profileResult, pickupResult] = await Promise.all([
+      pool.query("SELECT country_code FROM seller_profiles WHERE seller_id = $1", [req.user.id]),
+      pool.query("SELECT country FROM seller_pickup_addresses WHERE seller_id = $1", [req.user.id])
+    ]);
+    return res.json({
+      success: true,
+      readiness: buildShippingReadiness(profileResult.rows[0] || null, pickupResult.rows[0] || null)
+    });
+  } catch (error) {
+    console.error("Read seller shipping readiness failed:", error.message);
+    return res.status(500).json({
+      success: false,
+      message: "Unable to check your shipping preparation status."
+    });
+  }
+});
 
 // Private seller settings only: not verification, shipping eligibility,
 // public store data, courier booking, or permission to receive payouts.
