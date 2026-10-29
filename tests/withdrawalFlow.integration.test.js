@@ -154,6 +154,42 @@ test("PostgreSQL migrations and authenticated seller/admin withdrawal flow", {
     assert.deepEqual(db.rows.map(x => x.seller_id), [2, 4]);
   });
 
+  await t.test("international seller profiles are private and seller-owned", async () => {
+    const url = base + "/api/seller/profile";
+    const data = {
+      business_name: "Example UK Store", country_code: "GB",
+      business_city: "London", business_region: "",
+      preferred_currency: "GBP", seller_id: 4
+    };
+    async function req(method, bearer, body) {
+      const response = await fetch(url, {
+        method,
+        headers: {
+          ...(bearer ? { Authorization: "Bearer " + bearer } : {}),
+          ...(body ? { "Content-Type": "application/json" } : {})
+        },
+        ...(body ? { body: JSON.stringify(body) } : {})
+      });
+      return { status: response.status, ...(await response.json()) };
+    }
+    assert.equal((await req("GET")).status, 401);
+    assert.equal((await req("GET", tokens.buyer)).status, 403);
+    assert.equal((await req("PUT", tokens.admin, data)).status, 403);
+    assert.equal((await req("GET", tokens.seller)).profile, null);
+    assert.equal((await req("PUT", tokens.seller, { ...data, country_code: "ZZ" })).status, 400);
+    const saved = await req("PUT", tokens.seller, data);
+    assert.equal(saved.status, 200);
+    assert.equal(saved.profile.country_code, "GB");
+    assert.equal(saved.profile.seller_id, undefined);
+    assert.equal((await req("GET", tokens.other)).profile, null);
+    assert.equal((await req("PUT", tokens.other, { ...data, business_city: "Manchester" })).status, 200);
+    assert.equal((await req("PUT", tokens.seller, { ...data, business_city: "Oxford" })).status, 200);
+    assert.equal((await req("GET", tokens.seller)).profile.business_city, "Oxford");
+    assert.equal((await req("GET", tokens.other)).profile.business_city, "Manchester");
+    const rows = await pool.query("SELECT seller_id FROM seller_profiles ORDER BY seller_id");
+    assert.deepEqual(rows.rows.map(row => row.seller_id), [2, 4]);
+  });
+
   await t.test("seller list requires authentication and role", async () => {
     assert.equal((await call("GET", "/seller")).status, 401);
     assert.ok([401,403].includes((await call("GET", "/seller", tokens.buyer)).status));

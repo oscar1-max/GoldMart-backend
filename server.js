@@ -477,6 +477,18 @@ async function setupDatabase() {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );`,
 
+      // Private seller business location; no shipping or payout activation.
+      `CREATE TABLE IF NOT EXISTS seller_profiles (
+        seller_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        business_name VARCHAR(150) NOT NULL DEFAULT '',
+        country_code CHAR(2) NOT NULL,
+        business_city VARCHAR(120) NOT NULL,
+        business_region VARCHAR(120) NOT NULL DEFAULT '',
+        preferred_currency VARCHAR(3) NOT NULL CHECK (preferred_currency IN ('NGN','USD','GBP','EUR')),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );`,
+
       // Worldwide shipping groundwork: record seller-reported tracking per
       // seller and order. This is NOT a carrier integration or live quote.
       `CREATE TABLE IF NOT EXISTS goldmart_shipments (

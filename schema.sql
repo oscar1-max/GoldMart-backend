@@ -198,3 +198,16 @@ CREATE TABLE IF NOT EXISTS seller_pickup_addresses (
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+
+
+-- Seller-reported business location and currency, not a carrier or payout approval.
+CREATE TABLE IF NOT EXISTS seller_profiles (
+        seller_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        business_name VARCHAR(150) NOT NULL DEFAULT '',
+        country_code CHAR(2) NOT NULL,
+        business_city VARCHAR(120) NOT NULL,
+        business_region VARCHAR(120) NOT NULL DEFAULT '',
+        preferred_currency VARCHAR(3) NOT NULL CHECK (preferred_currency IN ('NGN','USD','GBP','EUR')),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
