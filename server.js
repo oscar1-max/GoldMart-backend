@@ -461,6 +461,22 @@ async function setupDatabase() {
       `CREATE INDEX IF NOT EXISTS seller_order_allocations_seller_status_idx
        ON seller_order_allocations(seller_id, status);`,
 
+      // Private, seller-owned pickup details. Never calls Shipbubble or books shipments.
+      `CREATE TABLE IF NOT EXISTS seller_pickup_addresses (
+        seller_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        contact_name VARCHAR(120) NOT NULL,
+        contact_email VARCHAR(254) NOT NULL,
+        contact_phone VARCHAR(24) NOT NULL,
+        address_line1 VARCHAR(300) NOT NULL,
+        address_line2 VARCHAR(200) NOT NULL DEFAULT '',
+        city VARCHAR(120) NOT NULL,
+        state VARCHAR(120) NOT NULL DEFAULT '',
+        country VARCHAR(100) NOT NULL,
+        postal_code VARCHAR(32) NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );`,
+
       // Worldwide shipping groundwork: record seller-reported tracking per
       // seller and order. This is NOT a carrier integration or live quote.
       `CREATE TABLE IF NOT EXISTS goldmart_shipments (
