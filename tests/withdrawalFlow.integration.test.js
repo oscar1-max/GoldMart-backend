@@ -190,6 +190,38 @@ test("PostgreSQL migrations and authenticated seller/admin withdrawal flow", {
     assert.deepEqual(rows.rows.map(row => row.seller_id), [2, 4]);
   });
 
+  await t.test("shipping preparation is private and fails closed", async () => {
+    const url = base + "/api/seller/profile/shipping-readiness";
+    async function check(bearer) {
+      const response = await fetch(url, {
+        headers: bearer ? { Authorization: "Bearer " + bearer } : {}
+      });
+      return { status: response.status, ...(await response.json()) };
+    }
+    assert.equal((await check()).status, 401);
+    assert.equal((await check(tokens.buyer)).status, 403);
+    assert.equal((await check(tokens.admin)).status, 403);
+    const seller = await check(tokens.seller);
+    assert.equal(seller.status, 200);
+    assert.equal(seller.readiness.status, "pickup_country_mismatch");
+    assert.equal(seller.readiness.origin_country_code, "GB");
+    assert.equal(seller.readiness.pickup_country_code, "NG");
+    assert.equal(seller.readiness.courier_bookings_enabled, false);
+    assert.equal(seller.readiness.shipping_checkout_enabled, false);
+    assert.equal(seller.readiness.international_payouts_enabled, false);
+    assert.equal(seller.readiness.address_line1, undefined);
+    assert.equal((await check(tokens.other)).readiness.status, "pickup_country_mismatch");
+    await pool.query("UPDATE seller_pickup_addresses SET country = 'United Kingdom' WHERE seller_id = 2");
+    const aligned = await check(tokens.seller);
+    assert.equal(aligned.readiness.status, "awaiting_courier_integration");
+    assert.equal(aligned.readiness.pickup_matches_profile, true);
+    assert.equal(aligned.readiness.shipping_checkout_enabled, false);
+    await pool.query("DELETE FROM seller_pickup_addresses WHERE seller_id = 2");
+    assert.equal((await check(tokens.seller)).readiness.status, "missing_pickup_address");
+    await pool.query("DELETE FROM seller_profiles WHERE seller_id = 2");
+    assert.equal((await check(tokens.seller)).readiness.status, "missing_business_profile");
+  });
+
   await t.test("seller list requires authentication and role", async () => {
     assert.equal((await call("GET", "/seller")).status, 401);
     assert.ok([401,403].includes((await call("GET", "/seller", tokens.buyer)).status));
