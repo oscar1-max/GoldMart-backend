@@ -16,6 +16,7 @@ const paymentRoutes = require("./payments");
 const shippingRoutes = require("./shipping");
 const sellerRoutes = require("./seller");
 const sellerPickupRoutes = require("./sellerPickup");
+const sellerProfileRoutes = require("./sellerProfile");
 const withdrawalRoutes = require("./withdrawals");
 const reviewRoutes = require("./reviews");
 const notificationRoutes = require("./notifications");
@@ -112,6 +113,7 @@ router.use("/shipping", shippingRoutes);
 
 router.use("/seller", sellerRoutes);
 router.use("/seller/pickup-address", sellerPickupRoutes);
+router.use("/seller/profile", sellerProfileRoutes);
 
 // Seller withdrawal simulation and admin review: no bank transfers.
 router.use("/withdrawals", withdrawalRoutes);
