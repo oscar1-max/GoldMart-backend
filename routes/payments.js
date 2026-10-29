@@ -5,6 +5,7 @@ const pool = require("../db");
 const { protect } = require("../middleware/auth");
 const { matchesVerifiedPayment } = require("../utils/paystackPaymentValidation");
 const { normalizeDelivery } = require("../utils/shippingValidation");
+const { loadSellerRoutes, assessCartDelivery } = require("../utils/shippingProviderRegistry");
 
 const router = express.Router();
 
@@ -442,9 +443,20 @@ router.post(
       }
       const delivery = checkedDelivery.delivery;
 
-      // Worldwide destination capture is enabled, but carrier availability
-      // and shipping prices have not yet been quoted or promised.
-      // Real payments remain disabled by requireTestProvider().
+      // Enforce delivery eligibility on the SERVER, never trust the browser.
+      // Reject unsupported seller/destination combinations BEFORE Paystack.
+      const sellerRoutes = await loadSellerRoutes(pool, cart.rows.map(row => row.seller_id));
+      const eligibility = assessCartDelivery(sellerRoutes, delivery.country);
+      if (!eligibility.test_checkout_allowed) {
+        return res.status(409).json({
+          success: false,
+          code: "DELIVERY_NOT_SUPPORTED",
+          message: "Delivery is not available for this seller and destination. No payment was started.",
+          eligibility
+        });
+      }
+      // NG-to-NG is only a Paystack test checkout without courier service.
+      // No shipping fee is charged or represented as a courier quotation.
 
       // ================================================
       // PAYMENT REFERENCE
