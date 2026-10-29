@@ -4,6 +4,7 @@ const { protect, authorize } = require("../middleware/auth");
 const { request, formatRate, ShipbubbleError } = require("../services/shipbubble");
 
 const { normalizeAddressInput, normalizeAddressRecord } = require("../utils/shipbubbleAddressValidation");
+const { normalizeShipment } = require("../utils/shipbubbleShipmentSummary");
 
 const router = express.Router();
 const addressValidationCooldown = new Map();
@@ -148,6 +149,25 @@ router.post("/preview-rates", async (req, res) => {
   } catch (error) {
     return res.status(error instanceof ShipbubbleError ? error.httpStatus : 502)
       .json({ success: false, message: error instanceof ShipbubbleError ? error.message : "Unable to get shipping quotations." });
+  }
+});
+
+// Read-only Shipbubble tracking preview. Never create a shipping label or
+// expose customer/seller contact details or parcel contents to the UI.
+router.get("/shipments", async (req, res) => {
+  try {
+    const data = await request("/shipping/labels");
+    const results = Array.isArray(data?.results) ? data.results : Array.isArray(data) ? data : [];
+    return res.json({
+      success: true, provider: "shipbubble", read_only: true,
+      bookings_enabled: false,
+      shipments: results.slice(0, 50).map(normalizeShipment).filter(Boolean),
+      // This is only the first provider page; do not imply exhaustive history.
+      page_limited: true
+    });
+  } catch (error) {
+    return res.status(error instanceof ShipbubbleError ? error.httpStatus : 502)
+      .json({ success: false, message: error instanceof ShipbubbleError ? error.message : "Unable to read shipping tracking." });
   }
 });
 
