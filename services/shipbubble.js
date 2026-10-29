@@ -23,45 +23,111 @@ function liveKey() {
 // Shipbubble's documented failed responses contain message and errors[].
 // Convert them into fixed, safe guidance; never send or log raw provider text
 // because it could echo a customer's address, email, or phone.
-function classifyAddressValidationFailure(httpStatus, payload) {
-  if (httpStatus === 401 || httpStatus === 403) {
-    return new ShipbubbleError("Shipbubble API access is not authorized for address validation. Check the live API key and API access settings.", 503);
+// Inspect only error-related provider fields. Never expose or log their raw
+// contents: they may echo names, phone numbers, emails or street addresses.
+// Some provider responses nest field errors in objects rather than strings.
+function addressFailureReasonText(payload) {
+  const parts = [];
+  function add(value, field = "", depth = 0) {
+    if (depth > 3 || parts.length >= 20 || value == null) return;
+    if (typeof value === "string") {
+      parts.push((field + " " + value).slice(0, 300));
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value.slice(0, 12)) add(item, field, depth + 1);
+      return;
+    }
+    if (typeof value === "object") {
+      for (const [key, nested] of Object.entries(value).slice(0, 15)) {
+        if (/^(token|api_?key|authorization|headers|request|body|customer|recipient)$/i.test(key)) continue;
+        add(nested, key, depth + 1);
+      }
+    }
   }
-  if (httpStatus === 429) {
-    return new ShipbubbleError("Shipbubble is limiting address validations. Please try again later.", 429);
+  if (payload && typeof payload === "object") {
+    add(payload.message, "message");
+    add(payload.errors, "errors");
+    add(payload.error, "error");
+    add(payload.detail, "detail");
+    add(payload.data?.errors, "data.errors");
+    add(payload.data?.message, "data.message");
   }
-  if (httpStatus >= 500) {
-    return new ShipbubbleError("Shipbubble address validation is temporarily unavailable. Please try again later.", 502);
-  }
-  const parts = [
-    typeof payload?.message === "string" ? payload.message : "",
-    ...(Array.isArray(payload?.errors) ? payload.errors.filter(value => typeof value === "string").slice(0, 10) : [])
-  ];
-  const reason = parts.join(" ").slice(0, 1500).toLowerCase();
+  return parts.join(" ").toLowerCase().slice(0, 2000);
+}
 
-  if (/credit|balance|wallet|insufficient funds|top.?up|payment required/.test(reason)) {
-    return new ShipbubbleError("Shipbubble may have insufficient address-validation credits or wallet balance. Check your Shipbubble account before trying again.", 422);
+function classifyAddressValidationFailure(httpStatus, payload) {
+  const upstreamStatus = Number.isInteger(httpStatus) && httpStatus >= 100 && httpStatus <= 599
+    ? httpStatus : 0;
+  // Provider status is an allowlist, not arbitrary text from the response.
+  const providerStatus = payload?.status === "failed" ? "failed"
+    : payload?.status === "success" ? "success" : "unknown";
+  const makeError = (reasonCode, message, status) => {
+    const diagnosticCode = "SB-VAL-" + upstreamStatus + "-" + reasonCode;
+    // Existing admin UI already displays the message. Make unknown failures
+    // actionable without requiring a frontend change or exposing raw data.
+    const safeMessage = reasonCode === "UNKNOWN"
+      ? message + " Support code: " + diagnosticCode + "." : message;
+    const error = new ShipbubbleError(safeMessage, status);
+    error.diagnosticCode = diagnosticCode;
+    error.providerHttpStatus = upstreamStatus;
+    error.providerStatus = providerStatus;
+    return error;
+  };
+
+  if (upstreamStatus === 401 || upstreamStatus === 403) {
+    return makeError("API_ACCESS",
+      "Shipbubble API access is not authorized for address validation. Check the live API key and API access settings.", 503);
+  }
+  if (upstreamStatus === 429) {
+    return makeError("RATE_LIMIT",
+      "Shipbubble is limiting address validations. Please try again later.", 429);
+  }
+  if (upstreamStatus >= 500) {
+    return makeError("PROVIDER_UNAVAILABLE",
+      "Shipbubble address validation is temporarily unavailable. Please try again later.", 502);
+  }
+
+  const reason = addressFailureReasonText(payload);
+  if (upstreamStatus === 402 || /credit|balance|wallet|insufficient funds|top.?up|payment required|not enough funds/.test(reason)) {
+    return makeError("CREDITS_OR_PAYMENT",
+      "Shipbubble may require validation credits or wallet funds. Check with Shipbubble before funding your wallet.", 422);
+  }
+  if (/\bkyc\b|know your customer|account.*(not verified|not approved|verification pending)|complete.*verification/.test(reason)) {
+    return makeError("KYC_OR_VERIFICATION",
+      "Shipbubble reports an account verification restriction. Ask support to confirm live API verification status.", 503);
   }
   if (/api access|permission|unauthori[sz]ed|forbidden|account.*(blocked|suspend|restrict|disabled)/.test(reason)) {
-    return new ShipbubbleError("Shipbubble has restricted address validation for this account. Check API access in Shipbubble settings.", 503);
+    return makeError("ACCOUNT_ACCESS",
+      "Shipbubble has restricted address validation for this account. Check API access in Shipbubble settings.", 503);
   }
-  if (/email/.test(reason) && /invalid|required|missing|incorrect|format/.test(reason)) {
-    return new ShipbubbleError("Shipbubble rejected the email address. Check the email and try again.", 422);
+  if (/email/.test(reason) && /invalid|required|missing|incorrect|format|not valid/.test(reason)) {
+    return makeError("INVALID_EMAIL",
+      "Shipbubble rejected the email address. Check the email and try again.", 422);
   }
-  if (/phone|mobile|telephone/.test(reason) && /invalid|required|missing|incorrect|format/.test(reason)) {
-    return new ShipbubbleError("Shipbubble rejected the phone number. Use a reachable number, such as +2348012345678.", 422);
+  if (/phone|mobile|telephone/.test(reason) && /invalid|required|missing|incorrect|format|not valid/.test(reason)) {
+    return makeError("INVALID_PHONE",
+      "Shipbubble rejected the phone number. Use a reachable number, such as +2348012345678.", 422);
   }
-  if (/full name|recipient name|name of/.test(reason) && /invalid|required|missing|incorrect|format/.test(reason)) {
-    return new ShipbubbleError("Shipbubble rejected the full name. Enter the sender's or recipient's full name.", 422);
+  if (/full name|recipient name|name of/.test(reason) && /invalid|required|missing|incorrect|format|not valid/.test(reason)) {
+    return makeError("INVALID_NAME",
+      "Shipbubble rejected the full name. Enter the sender's or recipient's full name.", 422);
   }
-  if (/address|location|street|postal|geocod|deliver/.test(reason) &&
-      /invalid|required|missing|not found|could not|unable|unrecognized|unrecognised|verify|unavailable|unsupported|does not exist/.test(reason)) {
-    return new ShipbubbleError("Shipbubble could not verify this address. Use a recognizable street address or landmark, plus city, state and Nigeria.", 422);
+  if (/address|location|street|postal|geocod|deliver|landmark/.test(reason) &&
+      /invalid|required|missing|not found|could not|couldn't|unable|unrecognized|unrecognised|verify|validat|unavailable|unsupported|does not exist|no match|no result|not serviceable|not deliverable/.test(reason)) {
+    return makeError("ADDRESS_NOT_VERIFIED",
+      "Shipbubble could not verify this address. Use a recognizable street address or landmark, plus city, state and Nigeria.", 422);
   }
-  if (/invalid request parameters|invalid parameter/.test(reason)) {
-    return new ShipbubbleError("Shipbubble rejected one or more fields. Check the full name, email, phone and complete street address.", 422);
+  if (/invalid request parameters|invalid parameter|invalid request body/.test(reason)) {
+    return makeError("INVALID_PARAMETERS",
+      "Shipbubble rejected one or more fields. Check the full name, email, phone and complete street address.", 422);
   }
-  return new ShipbubbleError("Shipbubble declined address validation. Check your Shipbubble account status and contact Shipbubble support if it continues.", 502);
+  if (upstreamStatus === 404) {
+    return makeError("ENDPOINT_NOT_FOUND",
+      "Shipbubble did not find the address validation endpoint. Ask Shipbubble support to check API availability.", 502);
+  }
+  return makeError("UNKNOWN",
+    "Shipbubble declined address validation. The exact reason was not recognized; share the support code with Shipbubble.", 502);
 }
 
 async function request(path, options = {}) {
