@@ -5,6 +5,7 @@ const pool = require("../db");
 const { protect, authorize } = require("../middleware/auth");
 const { normalizeSellerProfile } = require("../utils/sellerProfile");
 const { buildShippingReadiness } = require("../utils/shippingReadiness");
+const { providerOptions } = require("../utils/shippingProviderRegistry");
 
 const router = express.Router();
 const sellerOnly = [protect, authorize("seller")];
@@ -19,7 +20,10 @@ router.get("/shipping-readiness", ...sellerOnly, async (req, res) => {
     ]);
     return res.json({
       success: true,
-      readiness: buildShippingReadiness(profileResult.rows[0] || null, pickupResult.rows[0] || null)
+      readiness: {
+        ...buildShippingReadiness(profileResult.rows[0] || null, pickupResult.rows[0] || null),
+        provider_options: providerOptions(profileResult.rows[0]?.country_code || null)
+      }
     });
   } catch (error) {
     console.error("Read seller shipping readiness failed:", error.message);
