@@ -182,3 +182,19 @@ CREATE INDEX IF NOT EXISTS
 notifications_created_at_idx
 ON notifications(created_at);
 
+
+-- Private seller pickup address: not validated with a shipping provider.
+CREATE TABLE IF NOT EXISTS seller_pickup_addresses (
+        seller_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        contact_name VARCHAR(120) NOT NULL,
+        contact_email VARCHAR(254) NOT NULL,
+        contact_phone VARCHAR(24) NOT NULL,
+        address_line1 VARCHAR(300) NOT NULL,
+        address_line2 VARCHAR(200) NOT NULL DEFAULT '',
+        city VARCHAR(120) NOT NULL,
+        state VARCHAR(120) NOT NULL DEFAULT '',
+        country VARCHAR(100) NOT NULL,
+        postal_code VARCHAR(32) NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
