@@ -1,66 +1,86 @@
 "use strict";
 
-// Preserve Shipbubble's error JSON structure for troubleshooting while
-// redacting personal details and secrets. No raw body is logged or stored.
-const PRIVATE_KEYS = /token|key|authorization|secret|password|cookie|header|request|address|email|phone|mobile|name|customer|recipient|sender|receiver|location|contact|card|bank|user/i;
-const MESSAGE_KEYS = /^(message|messages|error|errors|detail|details|description|reason)$/i;
-const CODE_KEYS = /^(status|code|error_code|type|field|param|parameter|status_code|http_code)$/i;
+// Deliberately conservative: Shipbubble may echo submitted and unrelated
+// customer details in any free-text field or even in object keys.
+// We NEVER forward raw strings, unknown keys, emails, addresses or tokens.
+// This is a privacy-safe diagnostic summary, NOT the original API body.
+const ALLOWED_KEYS = new Set([
+  "status", "success", "code", "error_code", "status_code", "http_code",
+  "message", "messages", "error", "errors", "reason", "description",
+  "detail", "details", "data", "field", "param", "parameter", "type"
+]);
+const TEXT_KEYS = new Set(["message", "messages", "error", "errors", "reason",
+  "description", "detail", "details"]);
+const KNOWN_FIELDS = new Set(["address","email","phone","name","city","state",
+  "country","postal_code","postcode","zip","recipient","sender","street",
+  "latitude","longitude","amount","quantity"]);
+const KNOWN_STATUS = new Set(["success","failed","failure","error","pending","invalid"]);
+const KNOWN_TYPE = new Set(["validation_error","invalid_request","not_found",
+  "unauthorized","forbidden","rate_limit","bad_request","unprocessable_entity"]);
+const CODE_PATTERN = /^(?:E|ERR|SB|INVALID|MISSING|VALIDATION)_[A-Z0-9_]{2,48}$/;
 
-function scrubText(value, submitted = {}) {
-  let output = String(value).slice(0, 600);
-  const original = [submitted.name, submitted.email, submitted.phone, submitted.address];
-  const fragments = [
-    ...String(submitted.name || "").split(/\s+/),
-    ...String(submitted.address || "").split(/,/),
-  ];
-  for (const item of [...original, ...fragments]) {
-    const part = typeof item === "string" ? item.trim() : "";
-    if (part.length < 3) continue;
-    // String split is safe even for regex metacharacters; no regex injection.
-    const indexOf = output.toLowerCase().indexOf(part.toLowerCase());
-    if (indexOf >= 0) {
-      // Replace all repeated occurrences regardless of case.
-      while (output.toLowerCase().includes(part.toLowerCase())) {
-        const at = output.toLowerCase().indexOf(part.toLowerCase());
-        output = output.slice(0, at) + "[REDACTED]" + output.slice(at + part.length);
-      }
-    }
-  }
-  return output
-    .replace(/\bBearer\s+\S+/gi, "[REDACTED]")
-    .replace(/\bsb_(?:prod|test)_[A-Za-z0-9_-]+/gi, "[REDACTED]")
-    .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[REDACTED]")
-    .replace(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/g, "[REDACTED]")
-    .replace(/(?:\+?\d[\d\s().-]{7,}\d)/g, "[REDACTED]")
-    .replace(/https?:\/\/\S+/gi, "[REDACTED_URL]");
-}
+const TOPICS = [
+  ["address_validation", /\b(address|location|geocode|geocoding|street|postal|postcode)\b/i],
+  ["contact_information", /\b(email|phone|telephone|mobile|contact)\b/i],
+  ["credits_or_wallet", /\b(credit|wallet|balance|funds|payment|top.up)\b/i],
+  ["account_verification", /\b(kyc|verified|verification|approval|account)\b/i],
+  ["invalid_or_missing_fields", /\b(invalid|missing|required|format|parameter|field)\b/i],
+  ["delivery_coverage", /\b(deliverable|delivery|serviceable|coverage|unsupported)\b/i]
+];
 
-function safeNode(value, key, submitted, depth = 0) {
+function scrubNode(value, key = "", depth = 0) {
   if (depth > 5) return "[TRUNCATED]";
-  if (value === null || typeof value === "boolean") return value;
-  if (typeof value === "number") return Number.isFinite(value) ? value : null;
-  if (typeof value === "string") {
-    if (CODE_KEYS.test(key) && /^[a-zA-Z_][a-zA-Z0-9_.-]{0,60}$/.test(value)) return value;
-    if (MESSAGE_KEYS.test(key)) return scrubText(value, submitted);
-    return "[REDACTED]";
+  if (value === null) return null;
+  if (Array.isArray(value)) return value.slice(0, 12).map(entry => scrubNode(entry, key, depth + 1));
+  if (typeof value === "object") {
+    const result = {};
+    let omitted = 0;
+    for (const [field, child] of Object.entries(value).slice(0, 40)) {
+      // Only explicit known structural keys. Never echo provider-controlled key names.
+      if (!ALLOWED_KEYS.has(field)) {
+        omitted++;
+        continue;
+      }
+      result[field] = scrubNode(child, field, depth + 1);
+    }
+    if (Object.keys(value).length > 40) omitted += Object.keys(value).length - 40;
+    if (omitted) result.omitted_private_or_unknown_fields = omitted;
+    return result;
   }
-  if (Array.isArray(value)) return value.slice(0, 20).map(item => safeNode(item, key, submitted, depth + 1));
-  if (typeof value !== "object" || !value) return "[REDACTED]";
-  const result = {};
-  for (const [name, child] of Object.entries(value).slice(0, 30)) {
-    const safeName = /^[a-zA-Z_][a-zA-Z0-9_.-]{0,60}$/.test(name) ? name : "unrecognized_field";
-    result[safeName] = PRIVATE_KEYS.test(name) ? "[REDACTED]" : safeNode(child, name, submitted, depth + 1);
+  if (typeof value === "boolean") return key === "success" ? value : "[REDACTED]";
+  if (typeof value === "number") {
+    return (["code","status_code","http_code"].includes(key) &&
+      Number.isSafeInteger(value) && value >= 100 && value <= 599) ? value : "[REDACTED]";
   }
-  return result;
+  if (typeof value !== "string") return "[REDACTED]";
+  const lower = value.trim().toLowerCase();
+  if (key === "status") return KNOWN_STATUS.has(lower) ? lower : "[REDACTED]";
+  if (["field", "param", "parameter"].includes(key)) {
+    return KNOWN_FIELDS.has(lower) ? lower : "[REDACTED]";
+  }
+  if (key === "type") return KNOWN_TYPE.has(lower) ? lower : "[REDACTED]";
+  if (["code", "error_code"].includes(key)) {
+    return CODE_PATTERN.test(value) ? value : "[REDACTED]";
+  }
+  if (TEXT_KEYS.has(key)) {
+    // Preserve only fixed categories, never the message or text fragments.
+    // This deliberately cannot reconstruct the provider's original message.
+    const topics = TOPICS.filter(([,regex]) => regex.test(value)).map(([topic]) => topic);
+    return { raw_text: "[REDACTED]", detected_topics: topics };
+  }
+  return "[REDACTED]";
 }
 
-function createSupportDiagnostic(httpStatus, payload, submitted = {}) {
+function createSupportDiagnostic(httpStatus, payload) {
+  const safeStatus = Number.isInteger(httpStatus) && httpStatus >= 100 && httpStatus <= 599
+    ? httpStatus : null;
+  const snapshot = JSON.stringify(scrubNode(payload));
   return {
-    provider_http_status: httpStatus,
+    provider_http_status: safeStatus,
     provider_endpoint: "/v1/shipping/address/validate",
     format: "redacted_json_reconstruction",
-    redaction_note: "Review carefully before sharing. This preserves response fields but is not the original raw HTTP body.",
-    provider_response_redacted: JSON.stringify(safeNode(payload, "", submitted)).slice(0, 6000),
+    redaction_note: "For review only. Free-text and unknown fields are removed. This is NOT the raw API response requested by Shipbubble.",
+    provider_response_redacted: snapshot.length <= 6000 ? snapshot : '{"redacted":"response_too_large"}'
   };
 }
 
