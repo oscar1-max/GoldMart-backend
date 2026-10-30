@@ -1,0 +1,45 @@
+name: GoldMart dependency security audit
+
+on:
+  pull_request:
+    paths:
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/dependency-security-audit.yml"
+  push:
+    branches: [main]
+    paths:
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/dependency-security-audit.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: Report vulnerable backend dependencies
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+      # The project currently does not commit a package-lock.json. Generate
+      # one inside the ephemeral CI runner so audit can resolve the tree.
+      # No application code, credentials, deployment or checkout is touched.
+      - name: Resolve dependency tree without running package scripts
+        run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+      - name: Audit production dependencies (report only)
+        continue-on-error: true
+        run: npm audit --omit=dev --audit-level=moderate
+      - name: Audit all dependencies including development tools (report only)
+        continue-on-error: true
+        run: npm audit --audit-level=moderate
+      - name: Explain audit mode
+        run: |
+          echo "Audit is report-only until the exact advisories and safe fixes are reviewed."
+          echo "Do not run npm audit fix --force or enable real payments or courier bookings based only on this report."
