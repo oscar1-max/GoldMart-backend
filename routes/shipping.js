@@ -86,7 +86,10 @@ router.post("/addresses/validate", async (req, res) => {
     return res.status(error instanceof ShipbubbleError ? error.httpStatus : 502)
       .json({
         success: false,
-        message: error instanceof ShipbubbleError ? error.message : "Address validation failed."
+        message: error instanceof ShipbubbleError ? error.message : "Address validation failed.",
+        // Available only to the authenticated administrator who just attempted
+        // validation with explicit charge consent. Never includes the raw body.
+        support_diagnostic: error instanceof ShipbubbleError ? error.supportDiagnostic || null : null
       });
   }
 });

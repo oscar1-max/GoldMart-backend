@@ -3,6 +3,7 @@
 // The live key is only read server-side. No shipment creation or wallet debit
 // is performed by this module. Keep the base URL fixed to prevent SSRF.
 const BASE_URL = "https://api.shipbubble.com/v1";
+const { createSupportDiagnostic } = require("../utils/shipbubbleSupportDiagnostic");
 
 class ShipbubbleError extends Error {
   constructor(message, httpStatus = 502) {
@@ -161,7 +162,11 @@ async function request(path, options = {}) {
   }
   if (!response.ok || payload?.status !== "success") {
     if (path === "/shipping/address/validate") {
-      throw classifyAddressValidationFailure(response.status, payload);
+      const error = classifyAddressValidationFailure(response.status, payload);
+      // Attach a redacted snapshot to the error object only for the requesting admin.
+      // Do not log/store upstream error text. No additional provider call is made.
+      error.supportDiagnostic = createSupportDiagnostic(response.status, payload, options.body);
+      throw error;
     }
     // Never reflect provider error text, which could contain customer details.
     const status = response.status === 401 || response.status === 403 ? 503
