@@ -47,3 +47,11 @@ test("only exposes safe fields and valid address codes", () => {
   });
   assert.equal(normalizeAddressRecord({ address_code: "no-code" }), null);
 });
+
+test("normalizes formatted phone numbers without guessing country codes", () => {
+  assert.equal(normalizeAddressInput({ ...valid, phone: "+234 (801) 234-5678" }).phone, "+2348012345678");
+  assert.equal(normalizeAddressInput({ ...valid, phone: "+44 7700 900123" }).phone, "+447700900123");
+});
+test("rejects phone numbers longer than 15 digits", () => {
+  assert.equal(normalizeAddressInput({ ...valid, phone: "+1234567890123456" }), null);
+});
